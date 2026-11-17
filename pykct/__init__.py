@@ -18,13 +18,16 @@ from .core import create_projection_matrices, project
 from .core import project_image
 from .phantoms import (
     create_ball_phantom,
+    create_multi_ball_phantom,
     create_shepp_logan_phantom,
+    create_legacy_shepp_logan_phantom,
+    create_circle,
     create_ball_sinogram,
     create_shepp_logan_sinogram,
 )
-from .phantoms import calculate_centroid
+from .phantoms import calculate_centroid, SHEPP_LOGAN_VARIANTS
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     # Core projection
@@ -35,7 +38,11 @@ __all__ = [
     
     # Phantom generation
     "create_ball_phantom",
+    "create_multi_ball_phantom",
     "create_shepp_logan_phantom",
+    "create_legacy_shepp_logan_phantom",
+    "create_circle",
+    "SHEPP_LOGAN_VARIANTS",
     "create_ball_sinogram",
     "create_shepp_logan_sinogram",
     

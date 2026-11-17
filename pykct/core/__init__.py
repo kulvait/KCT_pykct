@@ -4,7 +4,7 @@
 Core KCT C++ Projector bindings and convenience functions.
 
 This module provides:
-- KCTProjector: Wrapper for kct-pb2d-projector binary
+- pb2d_projector: Wrapper for kct-pb2d-projector binary
 - create_projection_matrices: Automatic matrix generation
 - project: Execute projection
 - project_image: High-level convenience function
@@ -16,26 +16,45 @@ import subprocess
 import os
 import tempfile
 import shutil
-from typing import Optional, Union, Tuple
+from typing import Optional
 
 
-class KCTProjector:
+class pb2d_projector:
     """
-    KCT C++ projector wrapper with OpenCL support.
-    
-    The C++ runtime will auto-detect the OpenCL platform if platform_id is not specified.
+    Wrapper of the KCT parallel beam 2D projector binary kct-pb2d-projector
+    (OpenCL). Named after the binary; other KCT projectors (cone beam, 3D)
+    are separate tools.
+
+    Geometry of projection matrices is that of
+    createCameraMatricesForCircularScanTrajectoryParallelRay3D.py
+    ``--material-ct-convention`` (a = [cos, sin, 0]/PX, b = [0, 0, 1]/PY).
+
+    CoR convention: ``cor_offset`` is the signed distance in detector pixels
+    of the principal ray (the ray through the rotation axis) from the
+    geometric detector centre, i.e. the rotation axis is imaged at
+    detector pixel index (N-1)/2 + cor_offset. This equals
+    createProjectionMatrices.py ``--rotation-center-offset-pix`` and
+    ``--detector-center-offsetvx = -cor_offset`` of the geometry script
+    (which shifts the detector centre, not the axis).
     
     Parameters
     ----------
     platform_id : str, optional
-        OpenCL platform:device specification (e.g., "0:0", "0:1").
-        If None, the C++ runtime auto-detects the platform.
+        OpenCL "platform:device" passed to the binary as ``-p``.
+        Leave it None (recommended): the C++ runtime then selects the
+        platform and device by its own heuristic, which prefers a
+        platform expected to perform well (e.g. the first NVIDIA platform)
+        and its last device, to avoid clashing with the card that is
+        typically used for display or by other jobs. Specify it only
+        when a particular OpenCL device must do the work (e.g. "1:2");
+        do not pass a dummy "0:0", which overrides that heuristic and
+        may select a slow or busy device.
     verbose : bool
         Print progress information.
     
     Example
     -------
-    >>> projector = KCTProjector()  # Let C++ runtime auto-detect
+    >>> projector = pb2d_projector()  # Let C++ runtime auto-detect
     >>> sinogram = projector.project_phantom(
     ...     image, n_angles=512, detector_sizex=256, cor_offset=0.0
     ... )
@@ -82,8 +101,8 @@ class KCTProjector:
         pixel_sizey : float
             Pixel size in Y direction.
         cor_offset : float
-            Center of rotation offset in pixels from detector center.
-            Positive = CoR to the right of detector center.
+            CoR offset in pixels: the rotation axis is imaged at detector
+            pixel index (N-1)/2 + cor_offset (see :class:`pb2d_projector`).
         endpoint : bool
             Include endpoint in angle range.
         
@@ -96,7 +115,8 @@ class KCTProjector:
         -----
         Geometry follows KCT convention:
         - Geometric center at (N-1)/2 for N pixels
-        - CoR offset shifts detector center relative to rotation axis
+        - Rotation axis imaged at (N-1)/2 + cor_offset
+        - --material-ct-convention: b = [0, 0, 1/PY] (pb2d ignores the b row)
         - Output shape: (n_angles, 2, 4) where each row is [a_x, a_y, a_z, u0] and [b_x, b_y, b_z, v0]
         """
         # Create angles
@@ -128,15 +148,14 @@ class KCTProjector:
             # a: projection vector (X direction in detector coordinates)
             a = np.array([np.cos(theta) / PX, np.sin(theta) / PX, 0.0], dtype=np.float64)
             
-            # VY: Y-axis of detector (for parallel beam in 2D, this is Z-axis in object space)
-            VY = np.array([0.0, 0.0, -pixel_sizey], dtype=np.float64)
-            b = np.array([0.0, 0.0, -1.0 / pixel_sizey], dtype=np.float64)
+            # VY: Y-axis of detector, --material-ct-convention (PY along z)
+            VY = np.array([0.0, 0.0, pixel_sizey], dtype=np.float64)
+            b = np.array([0.0, 0.0, 1.0 / pixel_sizey], dtype=np.float64)
             
-            # Detector center with CoR offset
-            # CoR offset is along the detector's X-axis (VX direction), which rotates with theta
-            # For positive CoR offset, rotation axis is to the right of detector center
-            # This means the ray through rotation axis hits detector at position: center - offset
-            detector_center = cor_offset_physical * np.array([np.cos(theta), np.sin(theta), 0.0], dtype=np.float64)
+            # Detector centre placed at -cor_offset along VX (geometry script
+            # --detector-center-offsetvx = -cor_offset), so the principal ray
+            # through the rotation axis hits the detector at (N-1)/2 + cor_offset
+            detector_center = -cor_offset_physical * np.array([np.cos(theta), np.sin(theta), 0.0], dtype=np.float64)
             
             # Compute px0 and py0
             # px0 = position where ray through rotation axis hits detector
@@ -188,7 +207,7 @@ class KCTProjector:
         Returns
         -------
         np.ndarray
-            Projected sinogram as numpy array of shape (n_angles, 1, ndet).
+            Projected sinogram as numpy array of shape (1, n_angles, ndet).
         """
         # Build command
         cmd = ['kct-pb2d-projector']
@@ -250,7 +269,7 @@ class KCTProjector:
         start_angle: float = 0.0,
         angle_range: float = 360.0,
         detector_sizex: int = 256,
-        detector_sizey: int = 1,
+        detector_sizey: Optional[int] = None,
         cor_offset: float = 0.0,
         pixel_size: float = 1.0,
         use_temp_dir: bool = True
@@ -263,7 +282,8 @@ class KCTProjector:
         Parameters
         ----------
         image : np.ndarray
-            2D image of shape (ny, nx).
+            2D image (ny, nx) or volume (nz, ny, nx); each z slice is
+            projected independently (parallel beam).
         n_angles : int
             Number of projection angles.
         start_angle : float
@@ -272,10 +292,11 @@ class KCTProjector:
             Angular range in degrees (default: 360°).
         detector_sizex : int
             Detector X size.
-        detector_sizey : int
-            Detector Y size (typically 1 for 2D).
+        detector_sizey : int, optional
+            Detector Y size, defaults to the number of slices nz.
         cor_offset : float
-            CoR offset in pixels.
+            CoR offset in pixels; rotation axis is imaged at detector
+            pixel index (N-1)/2 + cor_offset.
         pixel_size : float
             Pixel size (used for both X and Y).
         use_temp_dir : bool
@@ -284,19 +305,20 @@ class KCTProjector:
         Returns
         -------
         np.ndarray
-            Sinogram of shape (n_angles, 1, detector_sizex).
+            Sinogram of shape (detector_sizey, n_angles, detector_sizex);
+            sinogram slice z corresponds to volume slice z.
         
         Example
         -------
         >>> import numpy as np
-        >>> from pykct import KCTProjector
+        >>> from pykct import pb2d_projector
         >>> 
         >>> # Create simple phantom
         >>> image = np.zeros((128, 128))
         >>> image[60:70, 60:70] = 1.0
         >>> 
         >>> # Project with CoR offset
-        >>> projector = KCTProjector()
+        >>> projector = pb2d_projector()
         >>> sinogram = projector.project_phantom(
         ...     image, n_angles=360, detector_sizex=256, cor_offset=5.0
         ... )
@@ -315,8 +337,16 @@ class KCTProjector:
             cleanup_dir = False
         
         try:
-            # Write volume (shape: 1 x ny x nx for DEN)
-            volume_3d = image[np.newaxis, :, :].astype(np.float32)
+            # Write volume (shape: nz x ny x nx for DEN)
+            volume_3d = np.asarray(image, dtype=np.float32)
+            if volume_3d.ndim == 2:
+                volume_3d = volume_3d[np.newaxis, :, :]
+            if volume_3d.ndim != 3:
+                raise ValueError(
+                    f"Expected 2D image or (nz, ny, nx) volume, got shape {volume_3d.shape}"
+                )
+            if detector_sizey is None:
+                detector_sizey = volume_3d.shape[0]
             DEN.storeNdarrayAsDEN(volume_file, volume_3d, force=True)
             
             # Create matrices
@@ -392,11 +422,13 @@ def create_projection_matrices(
     pixel_sizey : float
         Pixel size in Y direction.
     cor_offset : float
-        CoR offset in pixels from detector center.
+        CoR offset in pixels: the rotation axis is imaged at detector
+        pixel index (N-1)/2 + cor_offset (see :class:`pb2d_projector`).
     endpoint : bool
         Include endpoint in angle range.
     platform_id : str, optional
-        OpenCL platform ID (auto-detected if None).
+        OpenCL "platform:device". Leave None to let the C++ runtime choose
+        (recommended); see :class:`pb2d_projector`.
     verbose : bool
         Print progress information.
     
@@ -405,7 +437,7 @@ def create_projection_matrices(
     np.ndarray
         Camera matrices of shape (n_angles, 2, 4).
     """
-    projector = KCTProjector(platform_id=platform_id, verbose=verbose)
+    projector = pb2d_projector(platform_id=platform_id, verbose=verbose)
     return projector.create_projection_matrices(
         output_file=output_file,
         n_angles=n_angles,
@@ -446,7 +478,8 @@ def project(
     detector_sizey : int
         Y dimension of detector.
     platform_id : str, optional
-        OpenCL platform ID (auto-detected if None).
+        OpenCL "platform:device". Leave None to let the C++ runtime choose
+        (recommended); see :class:`pb2d_projector`.
     force : bool
         Overwrite output file if exists.
     verbose : bool
@@ -457,7 +490,7 @@ def project(
     np.ndarray
         Projected sinogram.
     """
-    projector = KCTProjector(platform_id=platform_id, verbose=verbose)
+    projector = pb2d_projector(platform_id=platform_id, verbose=verbose)
     return projector.project(
         volume_file=volume_file,
         matrices_file=matrices_file,
@@ -474,7 +507,7 @@ def project_image(
     start_angle: float = 0.0,
     angle_range: float = 360.0,
     detector_sizex: int = 256,
-    detector_sizey: int = 1,
+    detector_sizey: Optional[int] = None,
     cor_offset: float = 0.0,
     pixel_size: float = 1.0,
     platform_id: Optional[str] = None,
@@ -488,7 +521,8 @@ def project_image(
     Parameters
     ----------
     image : np.ndarray
-        2D image of shape (ny, nx).
+        2D image (ny, nx) or volume (nz, ny, nx); each z slice is
+        projected independently (parallel beam).
     n_angles : int
         Number of projection angles.
     start_angle : float
@@ -497,21 +531,24 @@ def project_image(
         Angular range in degrees (default: 360°).
     detector_sizex : int
         Detector X size.
-    detector_sizey : int
-        Detector Y size (typically 1 for 2D).
+    detector_sizey : int, optional
+        Detector Y size, defaults to the number of slices nz.
     cor_offset : float
-        CoR offset in pixels.
+        CoR offset in pixels; rotation axis is imaged at detector
+        pixel index (N-1)/2 + cor_offset.
     pixel_size : float
         Pixel size (used for both X and Y).
     platform_id : str, optional
-        OpenCL platform ID (auto-detected if None).
+        OpenCL "platform:device". Leave None to let the C++ runtime choose
+        (recommended); see :class:`pb2d_projector`.
     verbose : bool
         Print progress information.
     
     Returns
     -------
     np.ndarray
-        Sinogram of shape (1, n_angles, detector_sizex).
+        Sinogram of shape (detector_sizey, n_angles, detector_sizex);
+        sinogram slice z corresponds to volume slice z.
     
     Example
     -------
@@ -531,7 +568,7 @@ def project_image(
     ...     image, n_angles=360, detector_sizex=256, cor_offset=5.0
     ... )
     """
-    projector = KCTProjector(platform_id=platform_id, verbose=verbose)
+    projector = pb2d_projector(platform_id=platform_id, verbose=verbose)
     return projector.project_phantom(
         image=image,
         n_angles=n_angles,
@@ -543,6 +580,3 @@ def project_image(
         pixel_size=pixel_size
     )
 
-
-# Alias for pb2d_projector (as requested)
-pb2d_projector = KCTProjector

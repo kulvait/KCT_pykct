@@ -46,17 +46,15 @@ sl_sino = create_shepp_logan_sinogram(size=256, n_angles=512, detector_size=256)
 
 ```bash
 # Create phantom
-pykct-create-ball-phantom --radius 10 --antialias -o ball.den
-pykct-create-shepp-logan -o sl.den
+pykct-create-ball-phantom --radius 10 --antialias ball.den
+pykct-create-shepp-logan sl.den                    # --phantom Toft2D|Octave2D|legacy
 
 # Create sinogram
-pykct-create-ball-sinogram \
-    --radius 10 --n-angles 360 --detector-size 256 \
-    --cor-offset 5.0 --sinogram-file ball_sino.den
+pykct-create-ball-sinogram ball_sino.den \
+    --radius 10 --n-angles 360 --detector-size 256 --cor-offset 5.0
 
-pykct-create-shepp-logan-sinogram \
-    --n-angles 512 --detector-size 256 \
-    --sinogram-file sl_sino.den
+pykct-create-shepp-logan-sinogram sl_sino.den \
+    --n-angles 512 --detector-size 256
 
 # Calculate centroid
 pykct-den-centroid sinogram.den
@@ -77,12 +75,21 @@ sinogram = project_image(
     start_angle=0.0,        # Starting angle (degrees)
     angle_range=360.0,      # Angular range (degrees)
     detector_sizex=256,     # Detector size
-    cor_offset=0.0,         # CoR offset (pixels)
+    cor_offset=0.0,         # CoR offset (pixels), axis imaged at (N-1)/2 + cor_offset
     pixel_size=1.0          # Pixel size
 )
 ```
 
 **Projection matrices are created automatically and temporarily!**
+
+Volumes `(nz, ny, nx)` are accepted as well; each slice is projected
+independently and `detector_sizey` defaults to `nz`:
+
+```python
+import numpy as np
+volume = np.concatenate([create_ball_phantom(256, 10), create_shepp_logan_phantom(256)[None]])
+sino = project_image(volume, n_angles=360, detector_sizex=256)   # (2, 360, 256)
+```
 
 ### 2. Phantom Generation
 
@@ -106,12 +113,29 @@ ball = create_ball_phantom(
 )
 ```
 
+**Several balls:** `(x_offset, y_offset, radius[, value])` tuples or dicts,
+offsets from the geometric centre, overlapping discs add up:
+```python
+from pykct import create_multi_ball_phantom
+
+balls = create_multi_ball_phantom(
+    size=256,
+    balls=[(0, 0, 20), (60, -30, 8, 0.5), (-70, 40, 5)],
+)   # shape (1, 256, 256)
+```
+
 **Shepp-Logan phantom:**
 ```python
 from pykct import create_shepp_logan_phantom
 
-sl = create_shepp_logan_phantom(size=256)
+sl = create_shepp_logan_phantom(size=256)                       # SheppLogan2D (denpy)
+toft = create_shepp_logan_phantom(size=256, phantom="Toft2D")
 ```
+
+`phantom="legacy"` (or `create_legacy_shepp_logan_phantom`) reproduces the
+non-standard phantom of pykct <= 0.1.0 (swapped semi-axes, no rotations,
+centred at size/2). It is deprecated, emits a `FutureWarning` and will be
+removed in a later version; use it only to reproduce earlier experiments.
 
 ### 3. Direct Sinogram Generation
 
@@ -138,10 +162,10 @@ sl_sino = create_shepp_logan_sinogram(
 For full control over projection matrices:
 
 ```python
-from pykct import KCTProjector
+from pykct import pb2d_projector
 from denpy import DEN
 
-projector = KCTProjector()
+projector = pb2d_projector()
 
 # Create custom matrices
 matrices = projector.create_projection_matrices(
@@ -172,15 +196,29 @@ sinogram = projector.project(
 
 ### CoR Offset Convention
 
-- **Positive**: CoR to the RIGHT of detector center
-- **Negative**: CoR to the LEFT of detector center
+`cor_offset` is the signed distance, in detector pixels, of the principal ray
+(the ray through the rotation axis) from the geometric detector centre:
+
+```
+axis_position = (N-1)/2 + cor_offset
+```
+
+This is `createProjectionMatrices.py --rotation-center-offset-pix`. The
+`--detector-center-offsetvx` of
+`createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` shifts the
+detector centre instead, so it equals `-cor_offset`. Estimators reporting the
+axis position in pixel-index units with `(N-1)/2` as detector centre
+(e.g. algotom `find_center_vo`) return `(N-1)/2 + cor_offset`.
+
+Geometry otherwise equals the `--material-ct-convention` of the geometry script;
+the pb2d projector does not use the detector y row.
 
 ### Sinogram Shift Relationship
 
 For parallel beam geometry with 360° scan and no truncation:
 
 ```
-sinogram(cor + Δcor) = shift(sinogram(cor), -Δcor)
+sinogram(cor + Δcor) = shift(sinogram(cor), +Δcor)
 ```
 
 Where `shift` is along the detector axis (x-axis).
@@ -204,7 +242,8 @@ pykct/
 │   │   └── __init__.py       # Projector wrapper and functions
 │   ├── phantoms/
 │   │   └── __init__.py       # Phantom generation
-│   ├── scripts/
+│   ├── scripts/              # Thin CLI wrappers over the API above
+│   │   ├── _common.py
 │   │   ├── create_ball_phantom.py
 │   │   ├── create_shepp_logan.py
 │   │   ├── create_ball_sinogram.py
@@ -319,13 +358,18 @@ for i, cfg in enumerate(configs):
 
 ## Troubleshooting
 
-### OpenCL platform not detected
+### OpenCL platform selection
+
+Normally leave `platform_id=None`: the C++ runtime picks a platform expected
+to perform well (e.g. the first NVIDIA platform) and its last device, to avoid
+clashing with the display card or other jobs. Do not pass a dummy `"0:0"`.
+Only if that choice fails or a specific device must be used:
 
 ```python
-# Specify platform explicitly
-from pykct import KCTProjector
+from pykct import pb2d_projector
 
-projector = KCTProjector(platform_id="0:0")  # or "0:1", etc.
+# platform 1, device 2 as listed by `clinfo -l`
+projector = pb2d_projector(platform_id="1:2")
 ```
 
 ### Projection errors

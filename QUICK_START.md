@@ -40,11 +40,11 @@ sinogram = project_image(
 ### 2. Shepp-Logan Phantom (Using denpy)
 
 ```python
-from denpy import PHANTOM
-from pykct import project_image
+from pykct import create_shepp_logan_phantom, project_image
 
-# Create Shepp-Logan phantom from denpy specification
-phantom = PHANTOM.phantom2d(n=256)
+# Shepp-Logan phantom from denpy.PHANTOM specification;
+# phantom= "SheppLogan2D" (default) | "Octave2D" | "Toft2D" | "legacy"
+phantom = create_shepp_logan_phantom(size=256)
 
 # Project
 sinogram = project_image(
@@ -58,7 +58,7 @@ sinogram = project_image(
 ### 3. Ball Phantom
 
 ```python
-from pykct.scripts.create_ball_phantom import create_circle
+from pykct import create_circle
 from pykct import project_image
 
 # Create ball phantom with antialiasing
@@ -100,15 +100,15 @@ pykct-create-shepp-logan shepp_logan.den
 ### Create Ball Sinogram
 
 ```bash
-# With CoR offset using --detector-center-offsetvx
-pykct-create-ball-sinogram ball_sino.den \
-    --radius 10 --n-angles 512 --detector-size 256 \
-    --detector-center-offsetvx 5.0
-
-# Using --cor-offset alias
+# Rotation axis imaged at (N-1)/2 + 5
 pykct-create-ball-sinogram ball_sino.den \
     --radius 10 --n-angles 512 --detector-size 256 \
     --cor-offset 5.0
+
+# Same geometry as detector centre shift (--detector-center-offsetvx d == --cor-offset -d)
+pykct-create-ball-sinogram ball_sino.den \
+    --radius 10 --n-angles 512 --detector-size 256 \
+    --detector-center-offsetvx -5.0
 ```
 
 ### Create Shepp-Logan Sinogram
@@ -117,7 +117,7 @@ pykct-create-ball-sinogram ball_sino.den \
 # With CoR offset
 pykct-create-shepp-logan-sinogram sl_sino.den \
     --n-angles 512 --detector-size 256 \
-    --detector-center-offsetvx 5.0
+    --cor-offset 5.0
 ```
 
 ### Calculate Centroid
@@ -128,13 +128,17 @@ pykct-den-centroid sinogram.den
 
 ### OpenCL Platform
 
-By default, the C++ runtime auto-detects the OpenCL platform. To specify a platform:
+By default the C++ runtime selects the OpenCL platform and device by its own
+heuristic: it prefers a platform expected to perform well (e.g. the first
+NVIDIA platform) and uses its last device to avoid clashes with the card used
+for display or by other jobs. Leave `--platform` / `platform_id` unset unless
+a specific OpenCL device must do the work; do not pass a dummy `0:0`, which
+overrides the heuristic.
 
 ```bash
-pykct-create-ball-sinogram ball_sino.den \
-    --radius 10 --platform 0:0 \
-    --n-angles 512 --detector-size 256 \
-    --detector-center-offsetvx 5.0
+# Only when a specific device is wanted, e.g. platform 1, device 2 (see clinfo -l)
+pykct-create-ball-sinogram ball_sino.den --radius 10 --platform 1:2 \
+    --n-angles 360 --detector-size 256 --cor-offset 5.0
 ```
 
 ## Verification Test
@@ -146,11 +150,11 @@ cd /workspace/pykct
 # Create sinograms with different CoR offsets
 pykct-create-ball-sinogram data/ball0.den \
     --radius 5 --n-angles 36 --detector-size 64 \
-    --detector-center-offsetvx 0.0
+    --cor-offset 0.0
 
 pykct-create-ball-sinogram data/ball5.den \
     --radius 5 --n-angles 36 --detector-size 64 \
-    --detector-center-offsetvx 5.0
+    --cor-offset 5.0
 
 # Calculate centroids
 pykct-den-centroid data/ball0.den
@@ -158,8 +162,8 @@ pykct-den-centroid data/ball5.den
 
 # Expected:
 # - ball0: centroid ≈ 31.5 (detector center for 64-pixel detector)
-# - ball5: centroid ≈ 26.5 (shifted by -5 due to CoR offset)
-# Relationship: centroid(cor+Δ) = centroid(cor) - Δ
+# - ball5: centroid ≈ 36.5 (shifted by +5 due to CoR offset)
+# Relationship: centroid(cor+Δ) = centroid(cor) + Δ
 ```
 
 ## Key Points
@@ -167,9 +171,9 @@ pykct-den-centroid data/ball5.den
 1. **Geometric center**: `(N-1)/2` for N pixels
    - For 256 pixels: center = 127.5
    
-2. **CoR offset**: Positive = CoR to RIGHT
-   - sinogram(cor+5) = shift(sinogram(cor), -5)
-   - centroid(cor+5) = centroid(cor) - 5
+2. **CoR offset** (`--cor-offset`): rotation axis imaged at `(N-1)/2 + cor_offset`
+   - sinogram(cor+5) = shift(sinogram(cor), +5)
+   - centroid(cor+5) = centroid(cor) + 5
 
 3. **Shepp-Logan phantom**: Uses denpy.PHANTOM.phantom2d()
    - Specification lives in denpy, not re-implemented
@@ -181,20 +185,17 @@ pykct-den-centroid data/ball5.den
    - 2D input → `(1, n_angles, n_det)`
 
 6. **OpenCL platform**: C++ runtime auto-detects by default
-   - Specify `--platform` only if needed
+   - Specify `--platform` only to force a specific device; never a dummy `0:0`
 
 ## Complete Pipeline Example
 
 ```python
-from denpy import PHANTOM
-from pykct import project_image
-import numpy as np
+from pykct import create_shepp_logan_phantom, project_image, calculate_centroid
 
 # Test CoR shift relationship
+phantom = create_shepp_logan_phantom(size=256)
 results = []
 for cor in [0.0, 5.0, -10.0]:
-    # Create phantom
-    phantom = PHANTOM.phantom2d(n=256)
     
     # Project (C++ auto-detects platform)
     sino = project_image(
@@ -204,19 +205,17 @@ for cor in [0.0, 5.0, -10.0]:
         cor_offset=cor
     )
     
-    # Calculate centroid (simplified)
-    centroid = np.mean([
-        np.argmax(sino[0, i, :]) for i in range(sino.shape[1])
-    ])
+    # Mass-weighted detector centroid = image of the rotation axis
+    centroid, _ = calculate_centroid(sino)
     results.append((cor, centroid))
     
 for cor, centroid in results:
     print(f"CoR={cor:+.1f}: centroid = {centroid:.2f}")
 
 # Expected output:
-# CoR=+0.0: centroid ≈ 127.5
-# CoR=+5.0: centroid ≈ 122.5  (shifted by -5)
-# CoR=-10.0: centroid ≈ 137.5 (shifted by +10)
+# CoR=+0.0: centroid = 127.50
+# CoR=+5.0: centroid = 132.50
+# CoR=-10.0: centroid = 117.50
 ```
 
 ## Troubleshooting

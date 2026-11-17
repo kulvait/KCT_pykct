@@ -42,11 +42,10 @@ sinogram_offset = project_image(
 ### Using Shepp-Logan phantom from denpy
 
 ```python
-from denpy import PHANTOM
-from pykct import project_image
+from pykct import create_shepp_logan_phantom, project_image
 
-# Create Shepp-Logan phantom using denpy's specification
-phantom = PHANTOM.phantom2d(n=256)
+# Shepp-Logan phantom using denpy.PHANTOM specification
+phantom = create_shepp_logan_phantom(size=256)
 
 # Project
 sinogram = project_image(
@@ -57,14 +56,15 @@ sinogram = project_image(
 ### Creating ball phantom
 
 ```python
-from pykct.scripts.create_ball_phantom import create_circle
-import numpy as np
 from denpy import DEN
+from pykct import create_ball_phantom, create_multi_ball_phantom
 
-# Create ball phantom
-image = create_circle(size=256, radius=10, antialias=4)
-volume = image[np.newaxis, :, :].astype(np.float32)
+# Single ball, volume of shape (1, 256, 256)
+volume = create_ball_phantom(size=256, radius=10, antialias=True, antialias_factor=4)
 DEN.storeNdarrayAsDEN('ball.den', volume, force=True)
+
+# Several balls: (x_offset, y_offset, radius[, value]) from the geometric centre
+balls = create_multi_ball_phantom(size=256, balls=[(0, 0, 20), (60, -30, 8, 0.5)])
 ```
 
 ## Command Line Tools
@@ -86,19 +86,21 @@ pykct-create-shepp-logan shepp_logan.den
 ### Create ball sinogram
 
 ```bash
-pykct-create-ball-sinogram ball_sino.den --radius 10 --n-angles 360 \
-    --detector-size 256 --detector-center-offsetvx 5.0
-
-# --cor-offset is an alias for --detector-center-offsetvx
+# Rotation axis imaged at (N-1)/2 + 5 detector pixels
 pykct-create-ball-sinogram ball_sino.den --radius 10 --n-angles 360 \
     --detector-size 256 --cor-offset 5.0
+
+# Same geometry given as detector centre shift of the geometry script
+# (--detector-center-offsetvx d is equivalent to --cor-offset -d)
+pykct-create-ball-sinogram ball_sino.den --radius 10 --n-angles 360 \
+    --detector-size 256 --detector-center-offsetvx -5.0
 ```
 
 ### Create Shepp-Logan sinogram
 
 ```bash
 pykct-create-shepp-logan-sinogram sl_sino.den --n-angles 512 \
-    --detector-size 256 --detector-center-offsetvx 5.0
+    --detector-size 256 --cor-offset 5.0
 ```
 
 ### Calculate centroid
@@ -111,31 +113,37 @@ pykct-den-centroid sinogram.den
 
 ### OpenCL platform
 
-By default, the C++ runtime auto-detects the OpenCL platform. To specify a platform:
+By default the C++ runtime selects the OpenCL platform and device by its own
+heuristic: it prefers a platform expected to perform well (e.g. the first
+NVIDIA platform) and uses its last device to avoid clashes with the card used
+for display or by other jobs. Leave `--platform` / `platform_id` unset unless
+a specific OpenCL device must do the work; do not pass a dummy `0:0`, which
+overrides the heuristic.
 
 ```bash
-pykct-create-ball-sinogram ball_sino.den --radius 10 --platform 0:0 \
-    --n-angles 360 --detector-size 256 --detector-center-offsetvx 5.0
+# Only when a specific device is wanted, e.g. platform 1, device 2 (see clinfo -l)
+pykct-create-ball-sinogram ball_sino.den --radius 10 --platform 1:2 \
+    --n-angles 360 --detector-size 256 --cor-offset 5.0
 ```
 
 ## API Reference
 
 ### Core Functions
 
-#### `project_image(image, n_angles=512, start_angle=0.0, angle_range=360.0, detector_sizex=256, detector_sizey=1, cor_offset=0.0, pixel_size=1.0, platform_id=None, verbose=False)`
+#### `project_image(image, n_angles=512, start_angle=0.0, angle_range=360.0, detector_sizex=256, detector_sizey=None, cor_offset=0.0, pixel_size=1.0, platform_id=None, verbose=False)`
 
 High-level convenience function for projecting images.
 
 **Parameters:**
-- `image` (np.ndarray): 2D image of shape (ny, nx)
+- `image` (np.ndarray): 2D image (ny, nx) or volume (nz, ny, nx)
 - `n_angles` (int): Number of projection angles (default: 512)
 - `start_angle` (float): Starting angle in degrees (default: 0.0)
 - `angle_range` (float): Angular range in degrees (default: 360.0)
 - `detector_sizex` (int): Detector X size (default: 256)
-- `detector_sizey` (int): Detector Y size (default: 1)
-- `cor_offset` (float): CoR offset in pixels (default: 0.0)
+- `detector_sizey` (int, optional): Detector Y size (default: nz)
+- `cor_offset` (float): CoR offset in pixels; rotation axis imaged at `(N-1)/2 + cor_offset` (default: 0.0)
 - `pixel_size` (float): Pixel size (default: 1.0)
-- `platform_id` (str, optional): OpenCL platform ID. If None, C++ runtime auto-detects.
+- `platform_id` (str, optional): OpenCL `platform:device`. Leave None (recommended) so the C++ runtime picks the device, see [OpenCL platform](#opencl-platform).
 - `verbose` (bool): Print progress information
 
 **Returns:** Sinogram of shape (n_slices, n_angles, detector_sizex)
@@ -165,9 +173,10 @@ Create a 2D circular phantom with supersampling antialiasing.
 
 ### CoR Offset Convention
 
-- **Positive**: CoR to the RIGHT of detector center
-- **Negative**: CoR to the LEFT of detector center
-- **Relationship**: `sinogram(cor + Δ) = shift(sinogram(cor), -Δ)`
+- `cor_offset`: distance of the principal ray (through the rotation axis) from the geometric detector centre
+- **Rotation axis image**: detector pixel index `(N-1)/2 + cor_offset`
+- Same as `createProjectionMatrices.py --rotation-center-offset-pix`; `--detector-center-offsetvx` of `createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` is `-cor_offset`
+- **Relationship**: `sinogram(cor + Δ) = shift(sinogram(cor), +Δ)`
 
 ### Sinogram Shape Convention
 
