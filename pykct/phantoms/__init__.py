@@ -1,298 +1,221 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Phantom generation utilities for pykct.
+Phantoms on the pixel grid and their sinograms.
 
-This module provides functions for creating test phantoms (ball, Shepp-Logan)
-and generating sinograms from them.
+Phantom objects (:mod:`pykct.phantoms.objects2d`) draw themselves on a
+``size`` x ``size`` pixel grid; :func:`create_phantom2d` adds a list of them
+on one canvas and :func:`create_sinogram2d` projects the result with the KCT
+projector. Every sinogram therefore comes from a discretized image.
 
-Main functions:
-- create_ball_phantom: Create circular phantom with antialiasing
-- create_multi_ball_phantom: Several (possibly overlapping) discs
-- create_shepp_logan_phantom: Create Shepp-Logan phantom (denpy variants or legacy)
-- create_legacy_shepp_logan_phantom: Non-standard phantom of pykct <= 0.1.0
-- create_ball_sinogram: Project ball phantom with specified parameters
-- create_shepp_logan_sinogram: Project Shepp-Logan phantom
-- calculate_centroid: Calculate intensity-weighted centroid
+Objects
+-------
+* shapes given by a formula (:class:`PhantomShape`): :class:`Circle`,
+  :class:`HollowCircle`, :class:`Ellipse`, :class:`Rectangle`,
+  :class:`Triangle`, :class:`GaussianDot`
+* objects given as an image (:class:`PhantomImageObject`):
+  :class:`DenpyPhantom2D`, :class:`ArrayImage`
+
+All have ``x_center``, ``y_center`` (None: image centre (size-1)/2),
+``x_offset``, ``y_offset`` and ``value``, lengths in grid pixels, and the
+methods ``draw(size, antialias_factor=1, supersampling_factor=1)`` and
+``add_to(canvas, size, ...)``. See :mod:`pykct.phantoms.objects2d` for the
+coordinate conventions.
+
+Discretization
+--------------
+``supersampling_factor`` k: the image has size*k pixels per side, every
+pixel is 1/k of a ``size`` pixel and all objects are scaled by k, so the
+phantom covers the same region for every k.
+``antialias_factor`` a: every output pixel is the mean of a x a samples on
+a regular sub-grid (otherwise the objects are sampled at the pixel centre).
+
+Main functions
+--------------
+* :func:`create_phantom2d`             objects -> 2D image (size*k, size*k)
+* :func:`shepp_logan_shapes2d`         Shepp-Logan variants as Ellipse shapes
+* :func:`create_shepp_logan_phantom2d` Shepp-Logan image (= denpy.PHANTOM.phantom2d)
+* :func:`create_legacy_shepp_logan_phantom2d` deprecated pykct <= 0.1.0 phantom
+* :func:`create_sinogram2d`            objects -> image -> KCT sinogram
+* :func:`calculate_centroid`           intensity-weighted centroid of a frame
 """
 
-import numpy as np
-from denpy import DEN
 import os
 import warnings
 from typing import Optional, Tuple, Union
 
+import numpy as np
+from denpy import DEN
 
-def create_circle(
+from .objects2d import (ArrayImage, Circle, DenpyPhantom2D, Ellipse, GaussianDot, HollowCircle,
+                        PhantomImageObject, PhantomObject, PhantomShape, Rectangle, Triangle)
+
+__all__ = [
+    "PhantomObject", "PhantomShape", "PhantomImageObject",
+    "Circle", "HollowCircle", "Ellipse", "Rectangle", "Triangle", "GaussianDot",
+    "DenpyPhantom2D", "ArrayImage", "SHEPP_LOGAN_VARIANTS",
+    "create_phantom2d", "shepp_logan_shapes2d", "create_shepp_logan_phantom2d",
+    "create_legacy_shepp_logan_phantom2d", "create_sinogram2d", "calculate_centroid",
+]
+
+
+def _get_factor_size(enabled, factor, name):
+    """Factor of an (enable switch, factor) pair; refuse silent no-ops.
+
+    Returns ``factor`` if the switch is on (it must then be >= 2), 1 if it is
+    off (the factor must then be left at 1).
+    """
+    if isinstance(factor, bool) or float(factor) != int(factor) or int(factor) < 1:
+        raise ValueError(f"{name}_factor must be an integer >= 1, got {factor!r}")
+    factor = int(factor)
+    if enabled:
+        if factor < 2:
+            raise ValueError(f"{name}=True needs {name}_factor >= 2, got {factor}")
+        return factor
+    if factor != 1:
+        raise ValueError(f"{name}_factor={factor} given but {name}=False; "
+                         f"set {name}=True to use it")
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# drawing
+# ---------------------------------------------------------------------------
+
+def create_phantom2d(
     size: int,
-    radius: float,
-    x_center: Optional[float] = None,
-    y_center: Optional[float] = None,
-    antialias: int = 1
+    objects,
+    antialias: bool = False,
+    antialias_factor: int = 1,
+    supersampling: bool = False,
+    supersampling_factor: int = 1,
+    dtype=np.float32,
 ) -> np.ndarray:
     """
-    Create a 2D circular phantom.
-    
-    Parameters
-    ----------
-    size : int
-        Image width and height.
-    radius : float
-        Circle radius in pixels.
-    x_center : float, optional
-        X coordinate of circle center. Default: (size-1)/2
-    y_center : float, optional
-        Y coordinate of circle center. Default: (size-1)/2
-    antialias : int
-        Antialiasing factor. 1 = binary, >1 = supersampling.
-    
-    Returns
-    -------
-    np.ndarray
-        2D image of shape (size, size) with dtype float32.
-    
-    Notes
-    -----
-    Uses geometric center at (size-1)/2, consistent with KCT convention.
-    """
-    if antialias < 1:
-        raise ValueError("Antialias factor must be >= 1")
-    
-    # Geometric center
-    if x_center is None:
-        x_center = (size - 1) / 2.0
-    if y_center is None:
-        y_center = (size - 1) / 2.0
-    
-    # Pixel coordinates
-    yy, xx = np.ogrid[:size, :size]
-    
-    if antialias == 1:
-        # Binary circle
-        distance_squared = (xx - x_center)**2 + (yy - y_center)**2
-        return (distance_squared <= radius**2).astype(np.float32)
-    
-    # Supersampling antialiasing
-    offsets = (np.arange(antialias) + 0.5) / antialias - 0.5
-    
-    image = np.zeros((size, size), dtype=np.float32)
-    
-    for dy in offsets:
-        for dx in offsets:
-            distance_squared = (xx + dx - x_center)**2 + (yy + dy - y_center)**2
-            image += (distance_squared <= radius**2)
-    
-    image /= antialias**2
-    
-    return image
-
-
-def create_ball_phantom(
-    size: int = 256,
-    radius: float = 10.0,
-    x_center: Optional[float] = None,
-    y_center: Optional[float] = None,
-    x_offset: float = 0.0,
-    y_offset: float = 0.0,
-    antialias: bool = True,
-    antialias_factor: int = 4
-) -> np.ndarray:
-    """
-    Create a 2D circular phantom as a single-slice 3D volume.
-    
-    Parameters
-    ----------
-    size : int
-        Image width and height (default: 256).
-    radius : float
-        Circle radius in pixels (default: 10.0).
-    x_center : float, optional
-        Absolute X coordinate. Default: image center.
-    y_center : float, optional
-        Absolute Y coordinate. Default: image center.
-    x_offset : float
-        X offset from the selected/default X coordinate (default: 0.0).
-    y_offset : float
-        Y offset from the selected/default Y coordinate (default: 0.0).
-    antialias : bool
-        Enable supersampling antialiasing (default: True).
-    antialias_factor : int
-        Number of subpixel samples per dimension (default: 4).
-    
-    Returns
-    -------
-    np.ndarray
-        3D volume of shape (1, size, size) with dtype float32.
-    
-    Example
-    -------
-    >>> from pykct.phantoms import create_ball_phantom
-    >>> 
-    >>> # Centered ball
-    >>> phantom = create_ball_phantom(size=128, radius=10)
-    >>> 
-    >>> # Off-center ball
-    >>> phantom = create_ball_phantom(
-    ...     size=128, radius=10, x_offset=20.0
-    ... )
-    """
-    # Geometric center
-    center = (size - 1) / 2.0
-    
-    # Absolute coordinates
-    if x_center is None:
-        x_center = center + x_offset
-    else:
-        x_center = x_center + x_offset
-    
-    if y_center is None:
-        y_center = center + y_offset
-    else:
-        y_center = y_center + y_offset
-    
-    # Select antialiasing factor
-    aa_factor = antialias_factor if antialias else 1
-    
-    # Create 2D circle
-    image_2d = create_circle(
-        size=size,
-        radius=radius,
-        x_center=x_center,
-        y_center=y_center,
-        antialias=aa_factor
-    )
-    
-    # Convert to 3D volume (z, y, x)
-    volume = image_2d[np.newaxis, :, :].astype(np.float32)
-    
-    return volume
-
-
-def create_multi_ball_phantom(
-    size: int = 256,
-    balls=((0.0, 0.0, 10.0),),
-    antialias: bool = True,
-    antialias_factor: int = 4
-) -> np.ndarray:
-    """
-    Create a 2D phantom composed of several discs as a single-slice 3D volume.
+    Draw phantom objects on a 2D pixel grid.
 
     Parameters
     ----------
     size : int
-        Image width and height (default: 256).
-    balls : iterable
-        One entry per disc, either a tuple ``(x_offset, y_offset, radius)``
-        or ``(x_offset, y_offset, radius, value)``, or a dict with keys
-        ``x_offset``, ``y_offset``, ``radius`` and optional ``value``
-        (default 1.0). Offsets are in pixels from the geometric centre
-        (size-1)/2, as in :func:`create_ball_phantom`. Overlapping discs
+        Grid size in pixels; all shape parameters are in these pixels.
+    objects : PhantomObject or iterable of PhantomObject
+        Shapes (:class:`Circle`, :class:`HollowCircle`, :class:`Ellipse`,
+        :class:`Rectangle`, :class:`Triangle`, :class:`GaussianDot`) and image
+        objects (:class:`DenpyPhantom2D`, :class:`ArrayImage`); each is added
+        to the canvas by its ``add_to`` method, values of overlapping objects
         add up.
-    antialias : bool
-        Enable supersampling antialiasing (default: True).
-    antialias_factor : int
-        Number of subpixel samples per dimension (default: 4).
+    antialias, antialias_factor : bool, int
+        If enabled, each output pixel is the mean of antialias_factor^2
+        samples on a regular sub-grid (factor >= 2); otherwise each shape is
+        sampled at the pixel centre.
+    supersampling, supersampling_factor : bool, int
+        If enabled, the output has size * supersampling_factor pixels per
+        side and every shape parameter is scaled by the factor: the same
+        phantom on a finer grid (factor >= 2).
+    dtype : numpy dtype
+        Output dtype (default float32).
 
     Returns
     -------
     np.ndarray
-        3D volume of shape (1, size, size) with dtype float32.
+        2D image of shape (size*k, size*k), k = supersampling factor.
 
     Example
     -------
-    >>> phantom = create_multi_ball_phantom(
-    ...     size=256,
-    ...     balls=[(0, 0, 20), (60, -30, 8, 0.5), {"x_offset": -70, "y_offset": 40, "radius": 5}],
-    ... )
+    >>> from pykct.phantoms import create_phantom2d, Circle, HollowCircle, Rectangle
+    >>> image = create_phantom2d(256, [
+    ...     HollowCircle(radius=100, inner_radius=90),
+    ...     Circle(radius=10, x_offset=40, value=0.5),
+    ...     Rectangle(width=30, height=10, angle_deg=30, y_offset=-50),
+    ... ], antialias=True, antialias_factor=4)
     """
-    center = (size - 1) / 2.0
-    aa_factor = antialias_factor if antialias else 1
-    image = np.zeros((size, size), dtype=np.float32)
-    for i, ball in enumerate(balls):
-        if isinstance(ball, dict):
-            x_offset = ball["x_offset"]
-            y_offset = ball["y_offset"]
-            radius = ball["radius"]
-            value = ball.get("value", 1.0)
-        else:
-            if len(ball) not in (3, 4):
-                raise ValueError(
-                    f"Ball {i}: expected (x_offset, y_offset, radius[, value]), got {ball!r}"
-                )
-            x_offset, y_offset, radius = ball[:3]
-            value = ball[3] if len(ball) == 4 else 1.0
-        if radius <= 0:
-            raise ValueError(f"Ball {i}: radius must be positive")
-        image += value * create_circle(
-            size=size,
-            radius=radius,
-            x_center=center + x_offset,
-            y_center=center + y_offset,
-            antialias=aa_factor
-        )
-    return image[np.newaxis, :, :]
+    size = int(size)
+    if size < 1:
+        raise ValueError(f"size must be positive, got {size}")
+    antialias_factor = _get_factor_size(antialias, antialias_factor, "antialias")
+    supersampling_factor = _get_factor_size(supersampling, supersampling_factor, "supersampling")
+    if isinstance(objects, PhantomObject):
+        objects = [objects]
+    objects = list(objects)
+    for obj in objects:
+        if not isinstance(obj, PhantomObject):
+            raise TypeError(f"Expected PhantomObject instances (Circle, Ellipse, ...), got {obj!r}")
+    n = size * supersampling_factor
+    image = np.zeros((n, n), dtype=np.float64)
+    for obj in objects:
+        obj.add_to(image, size, antialias_factor=antialias_factor,
+                   supersampling_factor=supersampling_factor)
+    return image.astype(dtype, copy=False)
 
 
-#: Phantom names accepted by :func:`create_shepp_logan_phantom`.
-#: All except ``"legacy"`` are taken from :func:`denpy.PHANTOM.phantom2d`.
-SHEPP_LOGAN_VARIANTS = ("SheppLogan2D", "Octave2D", "Toft2D", "legacy")
+# ---------------------------------------------------------------------------
+# Shepp-Logan
+# ---------------------------------------------------------------------------
+
+#: Variants accepted by :func:`shepp_logan_shapes2d` (denpy.PHANTOM definitions).
+SHEPP_LOGAN_VARIANTS = ("SheppLogan2D", "Octave2D", "Toft2D")
 
 
-def create_shepp_logan_phantom(
+def shepp_logan_shapes2d(size: int, phantom: str = "SheppLogan2D"):
+    """
+    Shepp-Logan type phantom as :class:`Ellipse` shapes on a size x size grid.
+
+    The denpy.PHANTOM specification on [-1, 1]^2 is mapped exactly as
+    :func:`denpy.PHANTOM.phantom2d` samples it: x = -1 at column 0, x = +1 at
+    column size-1, y = +1 at row 0 (the head is upright on screen).
+
+    Parameters
+    ----------
+    size : int
+        Grid size in pixels.
+    phantom : str
+        One of :data:`SHEPP_LOGAN_VARIANTS`: "SheppLogan2D" (original 1974
+        specification, values in [0, 2]), "Octave2D" (skull amplitude 1),
+        "Toft2D" (Toft's modified, higher contrast).
+    """
+    if phantom not in SHEPP_LOGAN_VARIANTS:
+        raise ValueError(f"Unknown phantom '{phantom}', expected one of {SHEPP_LOGAN_VARIANTS}")
+    from denpy import PHANTOM
+    half = 0.5 * (size - 1)
+    shapes = []
+    for e in getattr(PHANTOM, phantom)():
+        # rows point down: y_pixel = centre - y * half, so the tilt changes sign
+        shapes.append(Ellipse(radius_x=e.a * half, radius_y=e.b * half, angle_deg=-e.phi,
+                              x_offset=e.x0 * half, y_offset=-e.y0 * half, value=e.A))
+    return shapes
+
+
+def create_shepp_logan_phantom2d(
     size: int = 256,
     phantom: str = "SheppLogan2D",
-    dtype=np.float32
+    antialias: bool = False,
+    antialias_factor: int = 1,
+    supersampling: bool = False,
+    supersampling_factor: int = 1,
+    dtype=np.float32,
 ) -> np.ndarray:
     """
-    Create a 2D Shepp-Logan type phantom.
+    Shepp-Logan type 2D phantom, see :func:`shepp_logan_shapes2d`.
 
-    Parameters
-    ----------
-    size : int
-        Image width and height (default: 256).
-    phantom : str
-        Phantom variant, one of :data:`SHEPP_LOGAN_VARIANTS`:
-
-        - ``"SheppLogan2D"`` (default): original Shepp & Logan (1974)
-          specification, values in [0, 2].
-        - ``"Octave2D"``: Octave/Matlab ``shepp_logan``, skull amplitude 1.0.
-        - ``"Toft2D"``: Toft's modified Shepp-Logan (higher contrast).
-        - ``"legacy"``: non-standard phantom produced by pykct <= 0.1.0,
-          see :func:`create_legacy_shepp_logan_phantom`. Deprecated,
-          subject to removal in a later version.
-    dtype : numpy dtype
-        Output data type (default: float32).
-
-    Returns
-    -------
-    np.ndarray
-        2D image of shape (size, size).
-
-    Notes
-    -----
-    Standard variants are generated by :func:`denpy.PHANTOM.phantom2d`
-    on the continuous domain [-1, 1] x [-1, 1] sampled at ``size`` points,
-    so the phantom is centred at the geometric centre (size-1)/2.
+    Without antialiasing and supersampling the image equals
+    ``denpy.PHANTOM.phantom2d(phantom, size)``. With supersampling the
+    ellipses are scaled with the grid, so the phantom covers the same region
+    for every factor.
     """
-    if phantom == "legacy":
-        return create_legacy_shepp_logan_phantom(size=size, _stacklevel=3).astype(dtype)
-    if phantom not in SHEPP_LOGAN_VARIANTS:
-        raise ValueError(
-            f"Unknown phantom '{phantom}', expected one of {SHEPP_LOGAN_VARIANTS}"
-        )
-    from denpy import PHANTOM
-    return PHANTOM.phantom2d(phantom=phantom, n=size).astype(dtype)
+    return create_phantom2d(size, shepp_logan_shapes2d(size, phantom), antialias=antialias,
+                            antialias_factor=antialias_factor, supersampling=supersampling,
+                            supersampling_factor=supersampling_factor, dtype=dtype)
 
 
-def create_legacy_shepp_logan_phantom(size: int = 256, _stacklevel: int = 2) -> np.ndarray:
+def create_legacy_shepp_logan_phantom2d(size: int = 256, _stacklevel: int = 2) -> np.ndarray:
     """
     Non-standard "Shepp-Logan" phantom of pykct <= 0.1.0.
 
     .. deprecated:: 0.1.0
-        Subject to removal in a later version. Kept only for reproducing
-        earlier experiments (e.g. ``sinogram_fft_analysis.ipynb`` in the
-        sinal package). Use :func:`create_shepp_logan_phantom` for new work.
-        Calling it emits a ``FutureWarning``.
+        Subject to removal. Kept only for reproducing earlier experiments
+        (e.g. ``sinogram_fft_analysis.ipynb``). Use
+        :func:`create_shepp_logan_phantom2d` for new work. Calling it emits a
+        ``FutureWarning``.
 
     It deviates from every standard Shepp-Logan definition:
 
@@ -311,8 +234,7 @@ def create_legacy_shepp_logan_phantom(size: int = 256, _stacklevel: int = 2) -> 
     """
     warnings.warn(
         "The legacy pykct Shepp-Logan phantom is non-standard and subject to "
-        "removal in a later version; use create_shepp_logan_phantom(size, "
-        "phantom='SheppLogan2D') for new work.",
+        "removal in a later version; use create_shepp_logan_phantom2d(size) for new work.",
         FutureWarning,
         stacklevel=_stacklevel,
     )
@@ -343,188 +265,88 @@ def create_legacy_shepp_logan_phantom(size: int = 256, _stacklevel: int = 2) -> 
     return phantom
 
 
-def create_ball_sinogram(
-    size: int = 256,
-    radius: float = 10.0,
-    x_offset: float = 0.0,
-    y_offset: float = 0.0,
+# ---------------------------------------------------------------------------
+# sinograms
+# ---------------------------------------------------------------------------
+
+def create_sinogram2d(
+    size: int,
+    objects,
     n_angles: int = 512,
     start_angle: float = 0.0,
     angle_range: float = 360.0,
-    detector_size: int = 256,
+    detector_size: Optional[int] = None,
     cor_offset: float = 0.0,
-    pixel_size: float = 1.0,
+    antialias: bool = False,
+    antialias_factor: int = 1,
+    supersampling: bool = False,
+    supersampling_factor: int = 1,
     output_file: Optional[str] = None,
-    antialias: bool = True,
-    antialias_factor: int = 4,
     platform_id: Optional[str] = None,
-    verbose: bool = False
-) -> np.ndarray:
+    verbose: bool = False,
+    return_phantom: bool = False,
+):
     """
-    Create sinogram from ball phantom.
-    
-    Convenience function that combines phantom creation and projection.
-    
+    Draw shapes with :func:`create_phantom2d` and project them with KCT.
+
+    Geometry is in pixels of the ``size`` grid, whatever the supersampling:
+    a detector pixel is one grid pixel, the rotation axis is the image
+    centre and is imaged at detector pixel (detector_size-1)/2 + cor_offset.
+    With supersampling factor k the image has k x k voxels per grid pixel,
+    it is projected with detector pixel size k voxels (projection matrices
+    of :func:`pykct.project_image` with ``pixel_size=k``), and the line
+    integrals are divided by k, so they are in grid pixel units for every k.
+
     Parameters
     ----------
-    size : int
-        Phantom size (default: 256).
-    radius : float
-        Ball radius in pixels (default: 10.0).
-    x_offset : float
-        X offset from center (default: 0.0).
-    y_offset : float
-        Y offset from center (default: 0.0).
-    n_angles : int
-        Number of projection angles (default: 512).
-    start_angle : float
-        Starting angle in degrees (default: 0.0).
-    angle_range : float
-        Angular range in degrees (default: 360.0).
-    detector_size : int
-        Detector size (default: 256).
+    size, objects, antialias, antialias_factor, supersampling, supersampling_factor
+        See :func:`create_phantom2d`.
+    n_angles, start_angle, angle_range : int, float, float
+        Angles start_angle + i * angle_range / n_angles in degrees, endpoint
+        excluded.
+    detector_size : int, optional
+        Number of detector pixels, default ``size``.
     cor_offset : float
-        Center of rotation offset in pixels (default: 0.0).
-    pixel_size : float
-        Pixel size (default: 1.0).
+        Rotation axis offset from the detector centre in pixels.
     output_file : str, optional
-        Save sinogram to DEN file if specified.
-    antialias : bool
-        Enable antialiasing (default: True).
-    antialias_factor : int
-        Antialiasing factor (default: 4).
+        Store the sinogram as a DEN file of shape (1, n_angles, detector_size).
     platform_id : str, optional
-        OpenCL "platform:device". Leave None to let the C++ runtime choose
-        (recommended); see :class:`pykct.pb2d_projector`.
+        OpenCL "platform:device"; leave None to let the C++ runtime choose
+        (recommended), see :class:`pykct.pb2d_projector`.
     verbose : bool
         Print progress information.
-    
+    return_phantom : bool
+        Also return the drawn image.
+
     Returns
     -------
-    np.ndarray
-        Sinogram of shape (1, n_angles, detector_size).
-    
-    Example
-    -------
-    >>> from pykct.phantoms import create_ball_sinogram
-    >>> 
-    >>> # Simple projection
-    >>> sino = create_ball_sinogram(
-    ...     size=128, radius=10, n_angles=360, detector_size=256
-    ... )
-    >>> 
-    >>> # With CoR offset
-    >>> sino = create_ball_sinogram(
-    ...     size=128, radius=10, n_angles=360, detector_size=256,
-    ...     cor_offset=5.0
-    ... )
+    np.ndarray or (np.ndarray, np.ndarray)
+        Sinogram (n_angles, detector_size) float32; with ``return_phantom``
+        also the image (size*k, size*k).
     """
-    # Create phantom
-    phantom = create_ball_phantom(
-        size=size,
-        radius=radius,
-        x_offset=x_offset,
-        y_offset=y_offset,
-        antialias=antialias,
-        antialias_factor=antialias_factor
-    )
-    
-    # Project
     from pykct.core import project_image
-    
-    sinogram = project_image(
-        image=phantom[0, :, :],  # Extract 2D image
-        n_angles=n_angles,
-        start_angle=start_angle,
-        angle_range=angle_range,
-        detector_sizex=detector_size,
-        detector_sizey=1,
-        cor_offset=cor_offset,
-        pixel_size=pixel_size,
-        platform_id=platform_id,
-        verbose=verbose
-    )
-    
-    # Save if requested
+
+    supersampling_factor = _get_factor_size(supersampling, supersampling_factor, "supersampling")
+    image = create_phantom2d(size, objects, antialias=antialias,
+                             antialias_factor=antialias_factor, supersampling=supersampling,
+                             supersampling_factor=supersampling_factor)
+    if detector_size is None:
+        detector_size = int(size)
+    sinogram = project_image(image, n_angles=n_angles, start_angle=start_angle,
+                             angle_range=angle_range, detector_sizex=int(detector_size),
+                             detector_sizey=1, cor_offset=cor_offset,
+                             pixel_size=float(supersampling_factor),   # detector pixel = k voxels
+                             platform_id=platform_id, verbose=verbose)[0]
+    sinogram = (np.asarray(sinogram, dtype=np.float32)
+                / np.float32(supersampling_factor)).astype(np.float32)
     if output_file is not None:
-        DEN.storeNdarrayAsDEN(output_file, sinogram, force=True)
-    
-    return sinogram
+        DEN.storeNdarrayAsDEN(output_file, sinogram[np.newaxis], force=True)
+    return (sinogram, image) if return_phantom else sinogram
 
 
-def create_shepp_logan_sinogram(
-    size: int = 256,
-    n_angles: int = 512,
-    start_angle: float = 0.0,
-    angle_range: float = 360.0,
-    detector_size: int = 256,
-    cor_offset: float = 0.0,
-    pixel_size: float = 1.0,
-    output_file: Optional[str] = None,
-    phantom: str = "SheppLogan2D",
-    platform_id: Optional[str] = None,
-    verbose: bool = False
-) -> np.ndarray:
-    """
-    Create sinogram from Shepp-Logan phantom.
-    
-    Convenience function that combines phantom creation and projection.
-    
-    Parameters
-    ----------
-    size : int
-        Phantom size (default: 256).
-    n_angles : int
-        Number of projection angles (default: 512).
-    start_angle : float
-        Starting angle in degrees (default: 0.0).
-    angle_range : float
-        Angular range in degrees (default: 360.0).
-    detector_size : int
-        Detector size (default: 256).
-    cor_offset : float
-        Center of rotation offset in pixels (default: 0.0).
-    pixel_size : float
-        Pixel size (default: 1.0).
-    output_file : str, optional
-        Save sinogram to DEN file if specified.
-    phantom : str
-        Phantom variant, see :func:`create_shepp_logan_phantom`
-        (default: "SheppLogan2D").
-    platform_id : str, optional
-        OpenCL "platform:device". Leave None to let the C++ runtime choose
-        (recommended); see :class:`pykct.pb2d_projector`.
-    verbose : bool
-        Print progress information.
-    
-    Returns
-    -------
-    np.ndarray
-        Sinogram of shape (1, n_angles, detector_size).
-    """
-    image = create_shepp_logan_phantom(size=size, phantom=phantom)
-    
-    from pykct.core import project_image
-    
-    sinogram = project_image(
-        image=image,
-        n_angles=n_angles,
-        start_angle=start_angle,
-        angle_range=angle_range,
-        detector_sizex=detector_size,
-        detector_sizey=1,
-        cor_offset=cor_offset,
-        pixel_size=pixel_size,
-        platform_id=platform_id,
-        verbose=verbose
-    )
-    
-    # Save if requested
-    if output_file is not None:
-        DEN.storeNdarrayAsDEN(output_file, sinogram, force=True)
-    
-    return sinogram
-
+# ---------------------------------------------------------------------------
+# utilities
+# ---------------------------------------------------------------------------
 
 def calculate_centroid(
     data: Union[str, np.ndarray],
@@ -532,7 +354,7 @@ def calculate_centroid(
 ) -> Optional[Tuple[float, float]]:
     """
     Calculate intensity-weighted centroid of a 2D frame.
-    
+
     Parameters
     ----------
     data : np.ndarray or str
@@ -540,12 +362,12 @@ def calculate_centroid(
         A single-frame 3D array of shape (1, ny, nx) is accepted too.
     threshold : float, optional
         Ignore pixels with intensity below this threshold.
-    
+
     Returns
     -------
     tuple or None
         (x_centroid, y_centroid), or None if the frame has zero mass.
-    
+
     Notes
     -----
     Uses 0-indexed pixel coordinates (consistent with NumPy), so the
@@ -563,73 +385,20 @@ def calculate_centroid(
             frame = frame[0]
     if frame.ndim != 2:
         raise ValueError(f"Expected a 2D frame, got shape {frame.shape}")
-    
+
     frame = frame.astype(np.float64)
-    
+
     if threshold is not None:
         frame = np.where(frame >= threshold, frame, 0.0)
-    
+
     total_mass = np.sum(frame)
-    
+
     if np.isclose(total_mass, 0):
         return None
-    
+
     yy, xx = np.indices(frame.shape)
-    
+
     x_centroid = np.sum(xx * frame) / total_mass
     y_centroid = np.sum(yy * frame) / total_mass
-    
+
     return float(x_centroid), float(y_centroid)
-
-
-# Convenience alias for single ball phantom projection
-def create_dot_sinogram(
-    size: int = 256,
-    n_angles: int = 512,
-    detector_size: int = 256,
-    cor_offset: float = 0.0,
-    output_file: Optional[str] = None,
-    platform_id: Optional[str] = None,
-    verbose: bool = False
-) -> np.ndarray:
-    """
-    Create sinogram from single dot (point source) phantom.
-    
-    Parameters
-    ----------
-    size : int
-        Phantom size (default: 256).
-    n_angles : int
-        Number of projection angles (default: 512).
-    detector_size : int
-        Detector size (default: 256).
-    cor_offset : float
-        CoR offset in pixels (default: 0.0).
-    output_file : str, optional
-        Save sinogram to DEN file.
-    platform_id : str, optional
-        OpenCL "platform:device". Leave None to let the C++ runtime choose
-        (recommended); see :class:`pykct.pb2d_projector`.
-    verbose : bool
-        Print progress information.
-    
-    Returns
-    -------
-    np.ndarray
-        Sinogram of shape (1, n_angles, detector_size).
-    
-    Notes
-    -----
-    Creates a single point at the center of the volume.
-    """
-    return create_ball_sinogram(
-        size=size,
-        radius=0.5,  # Point-like
-        n_angles=n_angles,
-        detector_size=detector_size,
-        cor_offset=cor_offset,
-        output_file=output_file,
-        antialias=False,
-        platform_id=platform_id,
-        verbose=verbose
-    )

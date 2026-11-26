@@ -32,8 +32,6 @@ def add_projection_arguments(parser):
                      help="Detector center offset along VX in pixels as in "
                           "createCameraMatricesForCircularScanTrajectoryParallelRay3D.py, "
                           "equivalent to --cor-offset=-OFFSET.")
-    group.add_argument("--pixel-size", type=float, default=1.0,
-                       help="Pixel size (default: 1.0)")
     parser.add_argument("--platform", type=str, default=None,
                         help="OpenCL platform:device, e.g. 1:2. Omit it (recommended) to let the "
                              "C++ runtime pick a well performing platform and device by its "
@@ -45,8 +43,35 @@ def add_projection_arguments(parser):
     return group
 
 
+def add_discretization_arguments(parser):
+    """Antialiasing and supersampling options of create_phantom2d."""
+    group = parser.add_argument_group("Discretization")
+    group.add_argument("--antialias", action="store_true",
+                       help="Average ANTIALIAS_FACTOR^2 samples per pixel")
+    group.add_argument("--antialias-factor", type=int, default=4,
+                       help="Samples per pixel and axis with --antialias (default: 4)")
+    group.add_argument("--supersampling-factor", type=int, default=1,
+                       help="Draw on a grid SUPERSAMPLING_FACTOR times finer, i.e. "
+                            "SIZE*FACTOR pixels per side (default: 1, off); sinograms keep "
+                            "the geometry and units of the SIZE grid")
+    return group
+
+
+def discretization_kwargs(args):
+    """Translate parsed discretization options to create_phantom2d kwargs."""
+    if args.antialias_factor < 1 or args.supersampling_factor < 1:
+        raise SystemExit("Error: --antialias-factor and --supersampling-factor must be >= 1")
+    antialias = bool(args.antialias) and args.antialias_factor > 1
+    return dict(
+        antialias=antialias,
+        antialias_factor=args.antialias_factor if antialias else 1,
+        supersampling=args.supersampling_factor > 1,
+        supersampling_factor=args.supersampling_factor,
+    )
+
+
 def projection_kwargs(args):
-    """Translate parsed projection options to create_*_sinogram kwargs."""
+    """Translate parsed projection options to create_sinogram2d kwargs."""
     if args.cor_offset is not None:
         cor_offset = args.cor_offset
     elif args.detector_center_offsetvx is not None:
@@ -59,7 +84,6 @@ def projection_kwargs(args):
         angle_range=args.angle_range,
         detector_size=args.detector_size,
         cor_offset=cor_offset,
-        pixel_size=args.pixel_size,
         platform_id=args.platform,
         verbose=args.verbose,
     )

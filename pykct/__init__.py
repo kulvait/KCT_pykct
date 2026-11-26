@@ -8,8 +8,11 @@ projections without manually constructing projection matrices.
 Main functionality:
 - pb2d_projector: Wrapper for kct-pb2d-projector binary
 - Geometry utilities: Automatic projection matrix creation
-- Phantom generation: Ball, Shepp-Logan phantoms
-- Sinogram generation: Direct projection from images
+- Phantoms on the pixel grid: objects that draw themselves (shapes Circle,
+  HollowCircle, Ellipse, Rectangle, Triangle, GaussianDot; image objects
+  DenpyPhantom2D, ArrayImage), combined by create_phantom2d; Shepp-Logan
+  variants (create_shepp_logan_phantom2d)
+- Sinograms of drawn phantoms: create_sinogram2d (KCT projection)
 - Centroid calculation: For CoR detection
 """
 
@@ -17,17 +20,27 @@ from .core import pb2d_projector
 from .core import create_projection_matrices, project
 from .core import project_image
 from .phantoms import (
-    create_ball_phantom,
-    create_multi_ball_phantom,
-    create_shepp_logan_phantom,
-    create_legacy_shepp_logan_phantom,
-    create_circle,
-    create_ball_sinogram,
-    create_shepp_logan_sinogram,
+    PhantomObject,
+    PhantomShape,
+    PhantomImageObject,
+    DenpyPhantom2D,
+    ArrayImage,
+    Circle,
+    HollowCircle,
+    Ellipse,
+    Rectangle,
+    Triangle,
+    GaussianDot,
+    SHEPP_LOGAN_VARIANTS,
+    create_phantom2d,
+    shepp_logan_shapes2d,
+    create_shepp_logan_phantom2d,
+    create_legacy_shepp_logan_phantom2d,
+    create_sinogram2d,
+    calculate_centroid,
 )
-from .phantoms import calculate_centroid, SHEPP_LOGAN_VARIANTS
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
     # Core projection
@@ -35,17 +48,28 @@ __all__ = [
     "create_projection_matrices",
     "project",
     "project_image",
-    
-    # Phantom generation
-    "create_ball_phantom",
-    "create_multi_ball_phantom",
-    "create_shepp_logan_phantom",
-    "create_legacy_shepp_logan_phantom",
-    "create_circle",
+
+    # Phantom objects and phantoms
+    "PhantomObject",
+    "PhantomShape",
+    "PhantomImageObject",
+    "DenpyPhantom2D",
+    "ArrayImage",
+    "Circle",
+    "HollowCircle",
+    "Ellipse",
+    "Rectangle",
+    "Triangle",
+    "GaussianDot",
     "SHEPP_LOGAN_VARIANTS",
-    "create_ball_sinogram",
-    "create_shepp_logan_sinogram",
-    
+    "create_phantom2d",
+    "shepp_logan_shapes2d",
+    "create_shepp_logan_phantom2d",
+    "create_legacy_shepp_logan_phantom2d",
+
+    # Sinograms
+    "create_sinogram2d",
+
     # Utilities
     "calculate_centroid",
 ]

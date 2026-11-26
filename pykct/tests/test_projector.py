@@ -103,11 +103,11 @@ class TestMultiSlice:
     """Projection of (nz, ny, nx) volumes."""
 
     def test_slices_project_independently_in_order(self):
-        from pykct import create_ball_phantom, project_image
+        from pykct import Circle, create_phantom2d, project_image
 
-        v = np.concatenate([
-            create_ball_phantom(64, 4, x_offset=-15),
-            create_ball_phantom(64, 6, x_offset=10, y_offset=5),
+        v = np.stack([
+            create_phantom2d(64, Circle(4, x_offset=-15)),
+            create_phantom2d(64, Circle(6, x_offset=10, y_offset=5)),
         ])
         sino = project_image(v, n_angles=16, detector_sizex=64, cor_offset=2.5)
         assert sino.shape == (2, 16, 64)
@@ -122,75 +122,265 @@ class TestMultiSlice:
             project_image(np.zeros((2, 2, 8, 8)), n_angles=4, detector_sizex=8)
 
 
-class TestPhantoms:
-    """Tests for phantom generation."""
-    
-    def test_ball_phantom(self):
-        """Test ball phantom creation."""
-        from pykct import create_ball_phantom
-        
-        phantom = create_ball_phantom(
-            size=64, radius=5, x_offset=0.0, y_offset=0.0,
-            antialias=False
-        )
-        
-        assert phantom.shape == (1, 64, 64)
-        assert phantom.max() == 1.0
-    
-    def test_multi_ball_phantom(self):
-        from pykct import create_ball_phantom, create_multi_ball_phantom
+def _centroid(image):
+    y, x = np.indices(image.shape)
+    m = image.sum()
+    return (x * image).sum() / m, (y * image).sum() / m
 
-        single = create_ball_phantom(64, 5, x_offset=7, y_offset=-3)
-        np.testing.assert_array_equal(
-            create_multi_ball_phantom(64, [(7, -3, 5)]), single)
 
-        multi = create_multi_ball_phantom(
-            64, [(0, 0, 10), (0, 0, 4, 0.5),
-                 {"x_offset": 20, "y_offset": 20, "radius": 3, "value": 2.0}],
-            antialias=False)
-        assert multi.shape == (1, 64, 64)
-        assert multi.dtype == np.float32
-        assert np.isclose(multi[0, 32, 32], 1.5)     # overlapping discs add
-        assert np.isclose(multi.max(), 2.0)
+class TestShapes:
+    """Shapes drawn by create_phantom2d."""
+
+    def test_circle_binary(self):
+        from pykct import Circle, create_phantom2d
+
+        img = create_phantom2d(64, Circle(radius=5))
+        assert img.shape == (64, 64) and img.dtype == np.float32
+        assert img.max() == 1.0
+        assert img[31, 31] == 1.0 and img[0, 0] == 0.0
+        cx, cy = _centroid(img)
+        assert abs(cx - 31.5) < 1e-9 and abs(cy - 31.5) < 1e-9
+
+    @pytest.mark.parametrize("size", [63, 64])
+    @pytest.mark.parametrize("k", [1, 2, 3, 5])
+    def test_centred_shapes_are_point_symmetric(self, size, k):
+        """Pixels exactly on a boundary are treated alike on both sides."""
+        from pykct import Circle, Rectangle, create_phantom2d
+
+        kw = dict(supersampling=k > 1, supersampling_factor=k)
+        for shape in (Circle(5), Circle(7.5), Rectangle(10, 6)):
+            img = create_phantom2d(size, shape, **kw)
+            np.testing.assert_array_equal(img, img[::-1, ::-1])
+
+    def test_position_center_and_offset(self):
+        from pykct import Circle, create_phantom2d
+
+        a = create_phantom2d(64, Circle(5, x_center=20, y_center=40, x_offset=1.5))
+        b = create_phantom2d(64, Circle(5, x_offset=20 + 1.5 - 31.5, y_offset=40 - 31.5))
+        np.testing.assert_array_equal(a, b)
+        cx, cy = _centroid(create_phantom2d(64, Circle(5, x_offset=7, y_offset=-3),
+                                            antialias=True, antialias_factor=8))
+        assert abs(cx - 38.5) < 0.02 and abs(cy - 28.5) < 0.02
+
+    def test_values_add_up(self):
+        from pykct import Circle, create_phantom2d
+
+        img = create_phantom2d(64, [Circle(10), Circle(4, value=0.5),
+                                    Circle(3, x_offset=20, y_offset=20, value=2.0)])
+        assert np.isclose(img[32, 32], 1.5)
+        assert np.isclose(img.max(), 2.0)
+
+    def test_hollow_circle_complements_circle(self):
+        from pykct import Circle, HollowCircle, create_phantom2d
+
+        ring = create_phantom2d(64, HollowCircle(radius=20, inner_radius=8, x_offset=3.3))
+        inner = create_phantom2d(64, Circle(8, x_offset=3.3))
+        np.testing.assert_array_equal(ring + inner, create_phantom2d(64, Circle(20, x_offset=3.3)))
         with pytest.raises(ValueError):
-            create_multi_ball_phantom(64, [(0, 0)])
+            create_phantom2d(16, HollowCircle(radius=4, inner_radius=4))
+
+    def test_ellipse_rectangle_triangle_areas(self):
+        from pykct import Ellipse, Rectangle, Triangle, create_phantom2d
+
+        aa = dict(antialias=True, antialias_factor=8)
+        e = create_phantom2d(128, Ellipse(30, 12, angle_deg=25), **aa)
+        assert abs(e.sum() / (np.pi * 30 * 12) - 1) < 2e-3
+        r = create_phantom2d(64, Rectangle(30, 10, angle_deg=90), **aa)
+        assert abs(r.sum() - 300) < 0.5
+        rows = np.flatnonzero(r.sum(axis=1) > 0.5)
+        cols = np.flatnonzero(r.sum(axis=0) > 0.5)
+        assert np.ptp(rows) > np.ptp(cols)        # rotated by 90 deg: tall
+        t = create_phantom2d(64, Triangle(((0, -10), (10, 10), (-10, 10))), **aa)
+        assert abs(t.sum() - 200) < 0.5
+        t_rev = create_phantom2d(64, Triangle(((0, -10), (-10, 10), (10, 10))), **aa)
+        np.testing.assert_array_equal(t, t_rev)   # vertex order does not matter
+
+    def test_rotation_direction(self):
+        """Positive angle turns +x towards +y (row index increasing)."""
+        from pykct import Rectangle, create_phantom2d
+
+        img = create_phantom2d(65, Rectangle(40, 2, angle_deg=45, value=1.0))
+        assert img[32 + 10, 32 + 10] == 1.0 and img[32 - 10, 32 + 10] == 0.0
+
+    def test_gaussian_dot_mass(self):
+        from pykct import GaussianDot, create_phantom2d
+
+        g = create_phantom2d(64, GaussianDot(sigma=3, x_offset=5, value=2.0))
+        assert abs(g.sum() / (2 * 2 * np.pi * 9) - 1) < 1e-6
+        assert np.isclose(g.max(), 2.0, rtol=1e-6) or g.max() < 2.0
+
+    @pytest.mark.parametrize("k", [2, 3, 5])
+    def test_supersampling_same_phantom_finer_grid(self, k):
+        from pykct import Circle, GaussianDot, create_phantom2d
+
+        img = create_phantom2d(64, [Circle(6, x_offset=10.3, y_offset=-7.2),
+                                    GaussianDot(2.0, x_offset=-12, y_offset=9, value=0.0)],
+                               antialias=True, antialias_factor=4,
+                               supersampling=True, supersampling_factor=k)
+        n = 64 * k
+        assert img.shape == (n, n)
+        cx, cy = _centroid(img)
+        # back to grid pixels: the disc stays at (41.8, 24.3)
+        assert abs((cx - (n - 1) / 2) / k + 31.5 - 41.8) < 0.02
+        assert abs((cy - (n - 1) / 2) / k + 31.5 - 24.3) < 0.02
+        assert abs(img.sum() / k ** 2 / (np.pi * 36) - 1) < 0.02
+
+    def test_factor_validation(self):
+        from pykct import Circle, create_phantom2d
+
+        for bad in (dict(antialias=True), dict(antialias_factor=4),
+                    dict(supersampling=True), dict(supersampling_factor=2),
+                    dict(supersampling=True, supersampling_factor=2.5)):
+            with pytest.raises(ValueError):
+                create_phantom2d(8, Circle(2), **bad)
+        with pytest.raises(TypeError):
+            create_phantom2d(8, (1, 2, 3))
+
+
+class TestPhantomObjects:
+    """draw / add_to of the object classes and the image objects."""
+
+    def test_draw_equals_create_phantom2d(self):
+        from pykct import Circle, Ellipse, create_phantom2d
+
+        e = Ellipse(20, 8, angle_deg=30, x_offset=5.5)
+        np.testing.assert_array_equal(e.draw(64), create_phantom2d(64, e))
+        np.testing.assert_array_equal(
+            e.draw(64, antialias_factor=4, supersampling_factor=2),
+            create_phantom2d(64, e, antialias=True, antialias_factor=4,
+                             supersampling=True, supersampling_factor=2))
+        canvas = np.zeros((64, 64))
+        Circle(10).add_to(canvas, 64)
+        e.add_to(canvas, 64)
+        np.testing.assert_allclose(canvas, create_phantom2d(64, [Circle(10), e]))
+
+    def test_validation_at_construction(self):
+        from pykct import Circle, GaussianDot, HollowCircle, Rectangle, Triangle
+
+        for make in (lambda: Circle(0), lambda: HollowCircle(3, 5), lambda: Rectangle(1, -1),
+                     lambda: Triangle(((0, 0), (1, 1), (2, 2))), lambda: GaussianDot(0)):
+            with pytest.raises(ValueError):
+                make()
+        with pytest.raises(ValueError):
+            Circle(3).draw(16, antialias_factor=0)
+
+    def test_objects_are_immutable_and_keyword_friendly(self):
+        import dataclasses
+        from pykct import Circle
+
+        c = Circle(radius=5, x_offset=2, value=0.5)
+        assert c == Circle(5, x_offset=2, value=0.5)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            c.radius = 3
+
+    def test_custom_shape_subclass(self):
+        """A new shape only needs profile and extent."""
+        from dataclasses import dataclass
+        from pykct import Circle, PhantomShape, create_phantom2d
+
+        @dataclass(frozen=True)
+        class Square(PhantomShape):
+            side: float
+
+            def extent(self):
+                return self.side
+
+            def profile(self, x, y):
+                return ((np.abs(x) <= self.side / 2) & (np.abs(y) <= self.side / 2)).astype(float)
+
+        img = create_phantom2d(32, [Square(10, x_offset=-5), Circle(3)])
+        assert img.max() == 2.0 and img[15, 11] == 1.0
+
+    @pytest.mark.parametrize("n", [64, 65])
+    def test_denpy_phantom_object(self, n):
+        from denpy import PHANTOM
+        from pykct import DenpyPhantom2D, create_phantom2d
+
+        obj = DenpyPhantom2D(size_px=n, phantom="Toft2D")
+        np.testing.assert_array_equal(create_phantom2d(n, obj),
+                                      PHANTOM.phantom2d("Toft2D", n).astype(np.float32))
+        fine = obj.draw(n, supersampling_factor=2)
+        np.testing.assert_array_equal(fine, PHANTOM.phantom2d("Toft2D", 2 * n).astype(np.float32))
+        # smaller object (same parity as the grid) placed off-centre
+        m = 32 + n % 2
+        img = create_phantom2d(n, DenpyPhantom2D(size_px=m, x_offset=10, y_offset=-4))
+        r0, c0 = (n - m) // 2 - 4, (n - m) // 2 + 10
+        np.testing.assert_array_equal(img[r0:r0 + m, c0:c0 + m],
+                                      PHANTOM.phantom2d("SheppLogan2D", m).astype(np.float32))
+        assert img.sum() == pytest.approx(img[r0:r0 + m, c0:c0 + m].sum())
+
+    def test_image_object_alignment(self):
+        from pykct import DenpyPhantom2D, create_phantom2d
+
+        with pytest.raises(ValueError):          # half-pixel shift
+            create_phantom2d(64, DenpyPhantom2D(size_px=32, x_offset=0.5))
+        with pytest.raises(ValueError):          # odd object on an even grid, centred
+            create_phantom2d(64, DenpyPhantom2D(size_px=31))
+        # half a grid pixel is a whole canvas pixel with supersampling 2
+        img = create_phantom2d(64, DenpyPhantom2D(size_px=32, x_offset=0.5),
+                               supersampling=True, supersampling_factor=2)
+        assert img.shape == (128, 128)
+
+    def test_array_image(self):
+        from pykct import ArrayImage, Circle, create_phantom2d
+
+        arr = np.arange(16, dtype=float).reshape(4, 4)
+        img = create_phantom2d(8, [ArrayImage(array=arr, x_offset=-2, y_offset=-2)])
+        np.testing.assert_array_equal(img[0:4, 0:4], arr)
+        fine = create_phantom2d(8, ArrayImage(array=arr), supersampling=True,
+                                supersampling_factor=3)
+        np.testing.assert_array_equal(fine[6:18, 6:18], np.kron(arr, np.ones((3, 3))))
+        # antialiasing leaves a piecewise constant image unchanged
+        np.testing.assert_allclose(
+            create_phantom2d(8, ArrayImage(array=arr), antialias=True, antialias_factor=2),
+            create_phantom2d(8, ArrayImage(array=arr)))
+        # mixed with a shape
+        mixed = create_phantom2d(8, [ArrayImage(array=np.ones((8, 8))), Circle(1, value=2.0)])
+        assert mixed.max() == 3.0
+
+
+class TestSheppLogan:
 
     def test_shepp_logan_phantom(self):
-        """Test Shepp-Logan phantom creation."""
-        from pykct import create_shepp_logan_phantom
-        
-        phantom = create_shepp_logan_phantom(size=64)
-        
+        from pykct import create_shepp_logan_phantom2d
+
+        phantom = create_shepp_logan_phantom2d(size=64)
         assert phantom.shape == (64, 64)
         assert phantom.dtype == np.float32
         # Original Shepp-Logan: skull 2.0, brain 1.02
         assert np.isclose(phantom.max(), 2.0)
 
-    def test_shepp_logan_variants_match_denpy(self):
-        """Standard variants are delegated to denpy.PHANTOM.phantom2d."""
-        from pykct import create_shepp_logan_phantom
+    @pytest.mark.parametrize("n", [64, 129])
+    def test_shepp_logan_variants_match_denpy(self, n):
+        """The Ellipse shapes reproduce denpy.PHANTOM.phantom2d exactly."""
+        from pykct import SHEPP_LOGAN_VARIANTS, create_shepp_logan_phantom2d
         from denpy import PHANTOM
 
-        for name in ("SheppLogan2D", "Octave2D", "Toft2D"):
-            expected = PHANTOM.phantom2d(phantom=name, n=64).astype(np.float32)
-            np.testing.assert_array_equal(
-                create_shepp_logan_phantom(64, phantom=name), expected)
+        for name in SHEPP_LOGAN_VARIANTS:
+            expected = PHANTOM.phantom2d(phantom=name, n=n).astype(np.float32)
+            np.testing.assert_array_equal(create_shepp_logan_phantom2d(n, phantom=name), expected)
+
+    def test_shepp_logan_supersampling(self):
+        from pykct import create_shepp_logan_phantom2d
+
+        a = create_shepp_logan_phantom2d(64, antialias=True, antialias_factor=8)
+        b = create_shepp_logan_phantom2d(64, supersampling=True, supersampling_factor=4)
+        assert b.shape == (256, 256)
+        b_binned = b.reshape(64, 4, 64, 4).mean(axis=(1, 3))
+        assert np.abs(a - b_binned).mean() < 0.01
 
     def test_shepp_logan_unknown_variant(self):
-        from pykct import create_shepp_logan_phantom
+        from pykct import create_shepp_logan_phantom2d
 
         with pytest.raises(ValueError):
-            create_shepp_logan_phantom(64, phantom="nonsense")
+            create_shepp_logan_phantom2d(64, phantom="nonsense")
 
     def test_legacy_shepp_logan_phantom(self):
         """Legacy phantom is reproducible and differs from the standard one."""
-        from pykct import create_shepp_logan_phantom, create_legacy_shepp_logan_phantom
+        from pykct import create_legacy_shepp_logan_phantom2d
 
         with pytest.warns(FutureWarning):
-            legacy = create_legacy_shepp_logan_phantom(64)
-        with pytest.warns(FutureWarning):
-            via_name = create_shepp_logan_phantom(64, phantom="legacy")
-        np.testing.assert_array_equal(via_name, legacy)
+            legacy = create_legacy_shepp_logan_phantom2d(64)
         assert legacy.shape == (64, 64)
         assert np.isclose(legacy.max(), 1.2)
         # Head is wider than tall (swapped semi-axes)
@@ -200,30 +390,39 @@ class TestPhantoms:
 
 
 class TestSinogramGeneration:
-    """Tests for sinogram generation functions."""
-    
-    def test_ball_sinogram(self):
-        """Test ball sinogram creation."""
-        from pykct import create_ball_sinogram
-        
-        sino = create_ball_sinogram(
-            size=64, radius=5,
-            n_angles=36, detector_size=64,
-            cor_offset=0.0
-        )
-        
-        assert sino.shape == (1, 36, 64)
-    
-    def test_shepp_logan_sinogram(self):
-        """Test Shepp-Logan sinogram creation."""
-        from pykct import create_shepp_logan_sinogram
-        
-        sino = create_shepp_logan_sinogram(
-            size=64,
-            n_angles=36, detector_size=64
-        )
-        
-        assert sino.shape == (1, 36, 64)
+
+    def test_sinogram2d_shapes(self, tmp_path):
+        from pykct import Circle, create_sinogram2d, shepp_logan_shapes2d
+
+        sino, img = create_sinogram2d(64, Circle(5), n_angles=36, detector_size=80,
+                                      return_phantom=True)
+        assert sino.shape == (36, 80) and img.shape == (64, 64)
+        out = tmp_path / "s.den"
+        sino = create_sinogram2d(64, shepp_logan_shapes2d(64), n_angles=36, output_file=str(out))
+        assert sino.shape == (36, 64)
+        assert DEN.getNumpyArray(str(out)).shape == (1, 36, 64)
+
+    @pytest.mark.parametrize("k", [1, 2, 5])
+    @pytest.mark.parametrize("size,ndet", [(64, 64), (63, 64), (64, 63)])
+    def test_supersampled_sinogram_geometry(self, k, size, ndet):
+        """Centred disc stays on the axis, an off-centre disc follows
+        cor + x cos + y sin, line integrals in grid pixel units, for every k."""
+        from pykct import Circle, create_sinogram2d
+
+        disc = Circle(5, x_offset=12, y_offset=-7)
+        kw = dict(antialias=True, antialias_factor=4, supersampling=k > 1, supersampling_factor=k)
+        sino = create_sinogram2d(size, disc, n_angles=360, detector_size=ndet,
+                                 cor_offset=1.5, **kw)
+        theta = np.radians(np.arange(360))
+        centroid = (sino * np.arange(ndet)).sum(axis=1) / sino.sum(axis=1)
+        expected = (ndet - 1) / 2 + 1.5 + 12 * np.cos(theta) - 7 * np.sin(theta)
+        assert np.abs(centroid - expected).max() < 0.02
+        assert abs(sino.sum(axis=1).mean() / (np.pi * 25) - 1) < 0.02
+        for aa in (False, True):     # binary and antialiased discs
+            kw.update(antialias=aa, antialias_factor=4 if aa else 1)
+            centred = create_sinogram2d(size, Circle(5), n_angles=36, detector_size=ndet, **kw)
+            c = (centred * np.arange(ndet)).sum(axis=1) / centred.sum(axis=1)
+            assert np.abs(c - (ndet - 1) / 2).max() < 1e-3
 
 
 class TestGeometry:
@@ -254,9 +453,9 @@ class TestGeometry:
         For a full 360 degree parallel-beam sinogram the mass-weighted mean
         detector position equals the image of the rotation axis.
         """
-        from pykct import create_ball_phantom, project_image, calculate_centroid
+        from pykct import Circle, calculate_centroid, create_phantom2d, project_image
 
-        phantom = create_ball_phantom(size=128, radius=8, x_offset=15)
+        phantom = create_phantom2d(128, Circle(8, x_offset=15), antialias=True, antialias_factor=4)
         sino = project_image(phantom, n_angles=180, detector_sizex=128,
                              cor_offset=cor_offset)
         cx, _ = calculate_centroid(sino)
@@ -265,40 +464,22 @@ class TestGeometry:
 
 class TestCentroid:
     """Tests for centroid calculation."""
-    
-    def test_centroid_centered(self):
-        """Test centroid of centered circle."""
-        from pykct import calculate_centroid, create_ball_phantom
-        from denpy import DEN
-        
-        # Create centered ball
-        phantom = create_ball_phantom(
-            size=64, radius=5, antialias=False
-        )
-        
-        with tempfile.NamedTemporaryFile(suffix='.den', delete=False) as f:
-            temp_file = f.name
-        
-        try:
-            DEN.storeNdarrayAsDEN(temp_file, phantom, force=True)
-            
-            cx, cy = calculate_centroid(temp_file)
-            
-            # Center should be at (63/2, 63/2) = (31.5, 31.5)
-            expected_center = (64 - 1) / 2.0
-            assert abs(cx - expected_center) < 0.1
-            assert abs(cy - expected_center) < 0.1
-        finally:
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
 
+    def test_centroid_centered(self, tmp_path):
+        from pykct import Circle, calculate_centroid, create_phantom2d
+
+        phantom = create_phantom2d(64, Circle(5))
+        f = str(tmp_path / "c.den")
+        DEN.storeNdarrayAsDEN(f, phantom[None], force=True)
+        cx, cy = calculate_centroid(f)
+        assert abs(cx - 31.5) < 0.1
+        assert abs(cy - 31.5) < 0.1
 
     def test_centroid_array(self):
         """calculate_centroid accepts arrays and handles empty frames."""
-        from pykct import calculate_centroid, create_ball_phantom
+        from pykct import Circle, calculate_centroid, create_phantom2d
 
-        phantom = create_ball_phantom(size=64, radius=5, x_offset=7, y_offset=-3,
-                                      antialias=False)
+        phantom = create_phantom2d(64, Circle(5, x_offset=7, y_offset=-3))
         cx, cy = calculate_centroid(phantom)
         assert abs(cx - (31.5 + 7)) < 0.1
         assert abs(cy - (31.5 - 3)) < 0.1
@@ -316,25 +497,28 @@ class TestScripts:
 
     @pytest.mark.filterwarnings("ignore::FutureWarning")
     def test_shepp_logan_script_uses_library(self, tmp_path):
-        from pykct import create_shepp_logan_phantom
+        from pykct import create_legacy_shepp_logan_phantom2d, create_shepp_logan_phantom2d
 
-        for variant in ("SheppLogan2D", "legacy"):
-            out = tmp_path / f"{variant}.den"
-            self._run("pykct.scripts.create_shepp_logan", str(out),
-                      "-n", "32", "--phantom", variant)
-            np.testing.assert_array_equal(
-                DEN.getNumpyArray(str(out))[0],
-                create_shepp_logan_phantom(32, phantom=variant))
+        out = tmp_path / "sl.den"
+        self._run("pykct.scripts.create_shepp_logan", str(out), "-n", "32",
+                  "--supersampling-factor", "2")
+        np.testing.assert_array_equal(
+            DEN.getNumpyArray(str(out)).reshape(64, 64),
+            create_shepp_logan_phantom2d(32, supersampling=True, supersampling_factor=2))
+        out = tmp_path / "legacy.den"
+        self._run("pykct.scripts.create_shepp_logan", str(out), "-n", "32", "--phantom", "legacy")
+        np.testing.assert_array_equal(DEN.getNumpyArray(str(out)).reshape(32, 32),
+                                      create_legacy_shepp_logan_phantom2d(32))
 
     def test_ball_scripts_and_centroid(self, tmp_path):
-        from pykct import create_ball_phantom
+        from pykct import Circle, create_phantom2d
 
         phantom_file = tmp_path / "ball.den"
         self._run("pykct.scripts.create_ball_phantom", str(phantom_file),
                   "-n", "32", "-r", "4", "--x-offset", "3", "--antialias")
         np.testing.assert_array_equal(
-            DEN.getNumpyArray(str(phantom_file)).reshape(1, 32, 32),
-            create_ball_phantom(32, 4, x_offset=3))
+            DEN.getNumpyArray(str(phantom_file)).reshape(32, 32),
+            create_phantom2d(32, Circle(4, x_offset=3), antialias=True, antialias_factor=4))
 
         sino_file = tmp_path / "sino.den"
         self._run("pykct.scripts.create_ball_sinogram", str(sino_file),

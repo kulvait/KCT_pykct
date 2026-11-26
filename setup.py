@@ -10,7 +10,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="pykct",
-    version="0.1.0",
+    version="0.2.0",
     author="Vojtěch Kulvait",
     author_email="kulvait@gmail.com",
     description="Python bindings for KCT C++ Parallel Beam 2D Projector",
@@ -24,13 +24,12 @@ setup(
         "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
         "Operating System :: POSIX :: Linux",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
         "Topic :: Scientific/Engineering :: Medical Science Apps.",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     install_requires=[
         "numpy>=1.19.0",
         "scipy>=1.7.0",
