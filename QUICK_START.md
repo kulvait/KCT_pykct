@@ -184,7 +184,7 @@ pykct-den-centroid data/ball5.den
 
 7. **Projection matrices**: `pykct.PB2D.projection_matrix2D` (2x4, kct-pb-*)
    and `projection_matrix1D` (1x4, kct-pb2d-*) create the matrix of one view,
-   `pykct-create-camera-matrices-parallel-ray3d` a circular trajectory
+   `createCameraMatricesForCircularScanTrajectoryPB` (subcommands `PB3D`, `PB2D`) a circular trajectory
 
 ## Complete Pipeline Example
 

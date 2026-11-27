@@ -209,21 +209,35 @@ pykct-den-centroid sinogram.den
 
 ### Geometry script
 
-`pykct-create-camera-matrices-parallel-ray3d` is the port of the KCT script
+`createCameraMatricesForCircularScanTrajectoryPB` is the port of the KCT script
 `createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` onto
-`pykct.PB2D` with the same options and two additions, `--rotation-center-offset-pix`
-and `--flat-matrices` (1x4 matrices of kct-pb2d-*). You can also run it as
-`python -m pykct.scripts.create_camera_matrices_parallel_ray3d`:
+`pykct.PB2D`. The subcommand selects the format:
+
+- `PB3D`: 2x4 matrices of kct-pb-* (`projection_matrix2D`), with the detector
+  row options `--projection-sizey`, `--pixel-sizey`, `--detector-centerz` and
+  `--detector-center-offsetvy`;
+- `PB2D`: 1x4 matrices of kct-pb2d-* (`projection_matrix1D`), with
+  `--rotation-center-slope` (shift of the rotation axis image per detector row).
+
+Both accept `--rotation-center-offset-pix`. The angles are a uniform
+discretization (`--number-of-angles`, `--theta-zero`, `--theta-angular-range`,
+`--endpoint`), an explicit list in degrees `--angles 0,45,90.5` (write
+`--angles=-20,0,20` when the first angle is negative) or a mat file
+`--angles-mat`. You can also run it as
+`python -m pykct.scripts.createCameraMatricesForCircularScanTrajectoryPB`:
 
 ```bash
 # Synthetic circular trajectory, 2x4 matrices
-pykct-create-camera-matrices-parallel-ray3d cm.den --projection-sizex 2560 \
+createCameraMatricesForCircularScanTrajectoryPB PB3D cm.den --projection-sizex 2560 \
     --projection-sizey 2160 --number-of-angles 1800 --theta-angular-range 180
 
 # 1x4 matrices for kct-pb2d-*, rotation axis imaged 3.5 pixels right of the centre
-pykct-create-camera-matrices-parallel-ray3d cm1d.den --projection-sizex 2560 \
-    --number-of-angles 1800 --theta-angular-range 180 --flat-matrices \
+createCameraMatricesForCircularScanTrajectoryPB PB2D cm1d.den --projection-sizex 2560 \
+    --number-of-angles 1800 --theta-angular-range 180 \
     --rotation-center-offset-pix 3.5
+
+# Three explicit views
+createCameraMatricesForCircularScanTrajectoryPB PB2D cm3.den --projection-sizex 2560 --angles 0,60.001,180
 ```
 
 `--detector-center-offsetvx d` moves the detector centre, it is equivalent to
@@ -317,7 +331,7 @@ in grid pixel units (and the image with `return_phantom=True`).
 
 - `cor_offset`: distance of the principal ray (through the rotation axis) from the geometric detector centre
 - **Rotation axis image**: detector pixel index `(N-1)/2 + cor_offset`
-- Same as `rotation_center_offset_pix` of `pykct.PB2D` and `--rotation-center-offset-pix` of `createProjectionMatrices.py` and `pykct-create-camera-matrices-parallel-ray3d`; `--detector-center-offsetvx` of `createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` is `-cor_offset * pixel_size`
+- Same as `rotation_center_offset_pix` of `pykct.PB2D` and `--rotation-center-offset-pix` of `createProjectionMatrices.py` and `createCameraMatricesForCircularScanTrajectoryPB`; `--detector-center-offsetvx` of `createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` is `-cor_offset * pixel_size`
 - **Relationship**: `sinogram(cor + Δ) = shift(sinogram(cor), +Δ)`
 
 ### Sinogram Shape Convention
@@ -352,7 +366,7 @@ pykct/
 │   │   ├── create_shepp_logan.py
 │   │   ├── create_ball_sinogram.py
 │   │   ├── create_shepp_logan_sinogram.py
-│   │   ├── create_camera_matrices_parallel_ray3d.py
+│   │   ├── createCameraMatricesForCircularScanTrajectoryPB.py
 │   │   └── den_centroid.py
 │   └── tests/
 │       ├── test_PB2D.py

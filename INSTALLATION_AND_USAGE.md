@@ -187,7 +187,7 @@ P = np.array([PB2D.projection_matrix1D(t, 256, 1.0, rotation_center_offset_pix=2
 ```
 
 See the README for all functions of `pykct.PB2D` and the script
-`pykct-create-camera-matrices-parallel-ray3d`.
+`createCameraMatricesForCircularScanTrajectoryPB`.
 
 ## Geometry Reference
 
@@ -207,7 +207,7 @@ axis_position = (N-1)/2 + cor_offset
 
 This is `rotation_center_offset_pix` of `pykct.PB2D` and
 `--rotation-center-offset-pix` of `createProjectionMatrices.py` and
-`pykct-create-camera-matrices-parallel-ray3d`. The
+`createCameraMatricesForCircularScanTrajectoryPB`. The
 `--detector-center-offsetvx` of
 `createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` shifts the
 detector centre instead, so it equals `-cor_offset * pixel_size`. Estimators reporting the
@@ -254,7 +254,7 @@ pykct/
 │   │   ├── create_shepp_logan.py
 │   │   ├── create_ball_sinogram.py
 │   │   ├── create_shepp_logan_sinogram.py
-│   │   ├── create_camera_matrices_parallel_ray3d.py  # port of the KCT geometry script
+│   │   ├── createCameraMatricesForCircularScanTrajectoryPB.py  # port of the KCT geometry script
 │   │   └── den_centroid.py
 │   └── tests/
 │       ├── test_PB2D.py
