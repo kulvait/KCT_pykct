@@ -6,6 +6,7 @@ PyKCT is a clean Python package for KCT C++ parallel beam 2D projector integrati
 - Phantom generation (ball, Shepp-Logan via denpy)
 - Sinogram projection with automatic matrix creation
 - CoR offset support
+- Parallel ray projection matrices of KCT (`pykct.PB2D`)
 - Centroid calculation
 
 ## Installation
@@ -37,14 +38,14 @@ sinogram = project_image(
 # Shape: (1, 360, 256) = (slices, angles, detector)
 ```
 
-### 2. Shepp-Logan Phantom (Using denpy)
+### 2. Shepp-Logan Phantom
 
 ```python
-from pykct import create_shepp_logan_phantom, project_image
+from pykct import create_shepp_logan_phantom2d, project_image
 
-# Shepp-Logan phantom from denpy.PHANTOM specification;
-# phantom= "SheppLogan2D" (default) | "Octave2D" | "Toft2D" | "legacy"
-phantom = create_shepp_logan_phantom(size=256)
+# Ellipses of the denpy.PHANTOM specification drawn on the grid;
+# phantom= "SheppLogan2D" (default) | "Octave2D" | "Toft2D"
+phantom = create_shepp_logan_phantom2d(size=256)
 
 # Project
 sinogram = project_image(
@@ -55,28 +56,21 @@ sinogram = project_image(
 )
 ```
 
-### 3. Ball Phantom
+### 3. Phantoms from Shapes and Their Sinograms
 
 ```python
-from pykct import create_circle
-from pykct import project_image
+from pykct import Circle, HollowCircle, Rectangle, create_phantom2d, create_sinogram2d
 
-# Create ball phantom with antialiasing
-image = create_circle(
-    size=256,
-    radius=10,
-    x_center=None,  # Center (127.5, 127.5)
-    y_center=None,
-    antialias=4
-)
+shapes = [HollowCircle(radius=60, inner_radius=55),
+          Circle(radius=10, x_offset=20),                 # centre (147.5, 127.5)
+          Rectangle(width=30, height=8, angle_deg=20, y_offset=-30, value=0.5)]
 
-# Project
-sinogram = project_image(
-    image,
-    n_angles=512,
-    detector_sizex=256,
-    cor_offset=5.0
-)
+image = create_phantom2d(256, shapes, antialias=True, antialias_factor=4)   # (256, 256)
+
+# Draw on a 5x finer grid and project with KCT; geometry and line integrals
+# stay in pixels of the 256 grid
+sinogram = create_sinogram2d(256, shapes, n_angles=512, detector_size=256, cor_offset=5.0,
+                             supersampling=True, supersampling_factor=5)    # (512, 256)
 ```
 
 ## Command Line Tools
@@ -175,11 +169,12 @@ pykct-den-centroid data/ball5.den
    - sinogram(cor+5) = shift(sinogram(cor), +5)
    - centroid(cor+5) = centroid(cor) + 5
 
-3. **Shepp-Logan phantom**: Uses denpy.PHANTOM.phantom2d()
-   - Specification lives in denpy, not re-implemented
+3. **Shepp-Logan phantom**: ellipses of the denpy.PHANTOM specification
+   (`shepp_logan_shapes2d`); equals denpy.PHANTOM.phantom2d() pixel for pixel
 
-4. **Ball phantom**: Custom implementation with antialiasing
-   - Supersampling for smooth edges
+4. **Shapes**: Circle, HollowCircle, Ellipse, Rectangle, Triangle, GaussianDot
+   drawn by `create_phantom2d`; antialiasing (sub-samples per pixel) and
+   supersampling (finer grid, size*k) are separate options
 
 5. **Output shape**: `(n_slices, n_angles, n_det)`
    - 2D input → `(1, n_angles, n_det)`
@@ -187,13 +182,17 @@ pykct-den-centroid data/ball5.den
 6. **OpenCL platform**: C++ runtime auto-detects by default
    - Specify `--platform` only to force a specific device; never a dummy `0:0`
 
+7. **Projection matrices**: `pykct.PB2D.projection_matrix2D` (2x4, kct-pb-*)
+   and `projection_matrix1D` (1x4, kct-pb2d-*) create the matrix of one view,
+   `pykct-create-camera-matrices-parallel-ray3d` a circular trajectory
+
 ## Complete Pipeline Example
 
 ```python
-from pykct import create_shepp_logan_phantom, project_image, calculate_centroid
+from pykct import create_shepp_logan_phantom2d, project_image, calculate_centroid
 
 # Test CoR shift relationship
-phantom = create_shepp_logan_phantom(size=256)
+phantom = create_shepp_logan_phantom2d(size=256)
 results = []
 for cor in [0.0, 5.0, -10.0]:
     
@@ -231,10 +230,14 @@ pykct-create-ball-phantom ball.den --radius 10
 ### "np is not defined"
 Fixed! All scripts now properly import numpy.
 
-### "pykct.phantoms module not found"
-The pykct/phantoms module was removed. Use:
-- `denpy.PHANTOM.phantom2d()` for Shepp-Logan
-- `create_circle()` from `pykct.scripts.create_ball_phantom` for ball
+### Old phantom functions (pykct <= 0.1.x)
+pykct 0.2 replaced them:
+- `create_circle`, `create_ball_phantom`, `create_multi_ball_phantom` ->
+  `create_phantom2d(size, Circle(...) or [shapes])` (2D image, no (1, n, n) volume)
+- `create_shepp_logan_phantom` -> `create_shepp_logan_phantom2d`
+- `create_legacy_shepp_logan_phantom` -> `create_legacy_shepp_logan_phantom2d`
+- `create_ball_sinogram`, `create_shepp_logan_sinogram`, `create_dot_sinogram` ->
+  `create_sinogram2d(size, shapes, ...)` (sinogram `(n_angles, detector_size)`)
 
 ### Directory doesn't exist
 Create the directory first:

@@ -18,6 +18,8 @@ import tempfile
 import shutil
 from typing import Optional
 
+from pykct.PB2D import projection_matrix2D
+
 
 class pb2d_projector:
     """
@@ -25,9 +27,10 @@ class pb2d_projector:
     (OpenCL). Named after the binary; other KCT projectors (cone beam, 3D)
     are separate tools.
 
-    Geometry of projection matrices is that of
-    createCameraMatricesForCircularScanTrajectoryParallelRay3D.py
-    ``--material-ct-convention`` (a = [cos, sin, 0]/PX, b = [0, 0, 1]/PY).
+    Projection matrices are created by :func:`pykct.PB2D.projection_matrix2D`
+    in the material CT convention (a = [cos, sin, 0]/PX, b = [0, 0, 1]/PY),
+    that of createCameraMatricesForCircularScanTrajectoryParallelRay3D.py
+    ``--material-ct-convention``.
 
     CoR convention: ``cor_offset`` is the signed distance in detector pixels
     of the principal ray (the ray through the rotation axis) from the
@@ -126,46 +129,14 @@ class pb2d_projector:
         )
         angles_rad = np.radians(angles)
         
-        # Initialize matrices array
-        matrices = np.zeros((n_angles, 2, 4), dtype=np.float64)
-        
-        # Detector parameters
-        M = float(detector_sizey)
-        N = float(detector_sizex)
-        PX = pixel_sizex
-        
-        # CoR offset in physical units
-        cor_offset_physical = cor_offset * PX
-        
-        for i, theta in enumerate(angles_rad):
-            # Ray direction (unit vector)
-            # theta is angle from X axis, counter-clockwise
-            VR = np.array([np.sin(theta), -np.cos(theta), 0.0], dtype=np.float64)
-            
-            # VX: X-axis of detector (rotates with theta)
-            VX = np.array([np.cos(theta) * PX, np.sin(theta) * PX, 0.0], dtype=np.float64)
-            
-            # a: projection vector (X direction in detector coordinates)
-            a = np.array([np.cos(theta) / PX, np.sin(theta) / PX, 0.0], dtype=np.float64)
-            
-            # VY: Y-axis of detector, --material-ct-convention (PY along z)
-            VY = np.array([0.0, 0.0, pixel_sizey], dtype=np.float64)
-            b = np.array([0.0, 0.0, 1.0 / pixel_sizey], dtype=np.float64)
-            
-            # Detector centre placed at -cor_offset along VX (geometry script
-            # --detector-center-offsetvx = -cor_offset), so the principal ray
-            # through the rotation axis hits the detector at (N-1)/2 + cor_offset
-            detector_center = -cor_offset_physical * np.array([np.cos(theta), np.sin(theta), 0.0], dtype=np.float64)
-            
-            # Compute px0 and py0
-            # px0 = position where ray through rotation axis hits detector
-            px0 = N * 0.5 - 0.5 - np.dot(detector_center, a)
-            py0 = M * 0.5 - 0.5 - np.dot(detector_center, b)
-            
-            # Store in matrices array
-            matrices[i, 0, :] = np.append(a, px0)
-            matrices[i, 1, :] = np.append(b, py0)
-        
+        # Rotation axis imaged at (N-1)/2 + cor_offset, see pykct.PB2D.projection_matrix2D
+        matrices = np.array([
+            projection_matrix2D(theta, detector_sizex, detector_sizey, pixel_sizex, pixel_sizey,
+                                rotation_center_offset_pix=cor_offset, material_ct_convention=True)
+            for theta in angles_rad
+        ], dtype=np.float64).reshape((n_angles, 2, 4))
+        cor_offset_physical = cor_offset * pixel_sizex
+
         # Save to DEN file
         DEN.storeNdarrayAsDEN(output_file, matrices, force=True)
         

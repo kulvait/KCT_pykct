@@ -49,6 +49,7 @@ setup(
             "pykct-create-ball-sinogram=pykct.scripts.create_ball_sinogram:main",
             "pykct-create-shepp-logan-sinogram=pykct.scripts.create_shepp_logan_sinogram:main",
             "pykct-den-centroid=pykct.scripts.den_centroid:main",
+            "pykct-create-camera-matrices-parallel-ray3d=pykct.scripts.create_camera_matrices_parallel_ray3d:main",
         ],
     },
 )

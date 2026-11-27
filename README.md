@@ -122,6 +122,45 @@ sino, image = create_sinogram2d(256, [Circle(10, x_offset=30), Circle(5, y_offse
 # sino (360, 256), image (1280, 1280)
 ```
 
+### Projection matrices (pykct.PB2D)
+
+`pykct.PB2D` creates the projection matrix of a single view of the parallel
+ray geometry, the caller loops over the angles. `create_projection_matrices`
+and the geometry script below use it. The theory is in
+[KCT CBCT 5](https://kulvait.github.io/KCT_doc/posts/working-with-kct-cbct-5-parallel-beam-geometry.html)
+and [KCT CBCT 6](https://kulvait.github.io/KCT_doc/posts/working-with-kct-cbct-6-parallel-beam-geometry-2d.html).
+
+| function | format | geometry |
+|---|---|---|
+| `projection_matrix2D` | 2x4 | orthogonal detector aligned with the rotation axis |
+| `projection_matrix2D_skew` | 2x4 | y axis of the detector skewed, every row images a plane of constant z |
+| `projection_matrix2D_tilt` | 2x4 | detector rotated within its plane, axes stay orthogonal |
+| `projection_matrix2D_vectors` | 2x4 | general detector given by `VX`, `VY` (Gram matrix) |
+| `projection_matrix1D` | 1x4 | kct-pb2d-* format, third coordinate is the detector row |
+
+The 2x4 matrices are for the 3D tools `kct-pb-*`, the 1x4 matrices for the
+2D tools `kct-pb2d-*`. The rotation axis is imaged at the column
+`(N-1)/2 + rotation_center_offset_pix - detector_center_offsetvx/pixel_sizex`.
+`rotation_center_slope` is the shift of the image of the rotation axis in
+columns per detector row, the 2D functions refer the offset to the row imaging
+z = 0, `projection_matrix1D` to the row 0. kct-pb2d-* read also 2x4 matrices,
+but use only their first row, which is correct only without skew.
+
+```python
+import numpy as np
+from denpy import DEN
+from pykct import PB2D
+
+angles = np.deg2rad(np.linspace(0, 180, 1800, endpoint=False))   # Radon angle theta
+P = np.array([PB2D.projection_matrix2D(t, 2560, 2160, 0.00065, 0.00065,
+                                       rotation_center_offset_pix=3.5) for t in angles])
+DEN.storeNdarrayAsDEN("pm.den", P, force=True)                   # (1800, 2, 4)
+
+# kct-pb2d-* with a skewed rotation axis, offset(r) = 3.5 + 1e-4 * r pixels
+P1 = np.array([PB2D.projection_matrix1D(t, 2560, 0.00065, rotation_center_offset_pix=3.5,
+                                        rotation_center_slope=1e-4) for t in angles])
+```
+
 ## Command Line Tools
 
 All scripts require a **positional output file parameter** (no `-o`/`--output`).
@@ -167,6 +206,29 @@ pykct-den-centroid sinogram.den
 ```
 
 - For 2D images: shows 2D centroid
+
+### Geometry script
+
+`pykct-create-camera-matrices-parallel-ray3d` is the port of the KCT script
+`createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` onto
+`pykct.PB2D` with the same options and two additions, `--rotation-center-offset-pix`
+and `--flat-matrices` (1x4 matrices of kct-pb2d-*). You can also run it as
+`python -m pykct.scripts.create_camera_matrices_parallel_ray3d`:
+
+```bash
+# Synthetic circular trajectory, 2x4 matrices
+pykct-create-camera-matrices-parallel-ray3d cm.den --projection-sizex 2560 \
+    --projection-sizey 2160 --number-of-angles 1800 --theta-angular-range 180
+
+# 1x4 matrices for kct-pb2d-*, rotation axis imaged 3.5 pixels right of the centre
+pykct-create-camera-matrices-parallel-ray3d cm1d.den --projection-sizex 2560 \
+    --number-of-angles 1800 --theta-angular-range 180 --flat-matrices \
+    --rotation-center-offset-pix 3.5
+```
+
+`--detector-center-offsetvx d` moves the detector centre, it is equivalent to
+`--rotation-center-offset-pix -d/pixel_sizex`. The geometry of PETRA III scans
+(`createProjectionMatrices.py`) is not part of pykct.
 
 ### OpenCL platform
 
@@ -255,7 +317,7 @@ in grid pixel units (and the image with `return_phantom=True`).
 
 - `cor_offset`: distance of the principal ray (through the rotation axis) from the geometric detector centre
 - **Rotation axis image**: detector pixel index `(N-1)/2 + cor_offset`
-- Same as `createProjectionMatrices.py --rotation-center-offset-pix`; `--detector-center-offsetvx` of `createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` is `-cor_offset`
+- Same as `rotation_center_offset_pix` of `pykct.PB2D` and `--rotation-center-offset-pix` of `createProjectionMatrices.py` and `pykct-create-camera-matrices-parallel-ray3d`; `--detector-center-offsetvx` of `createCameraMatricesForCircularScanTrajectoryParallelRay3D.py` is `-cor_offset * pixel_size`
 - **Relationship**: `sinogram(cor + Δ) = shift(sinogram(cor), +Δ)`
 
 ### Sinogram Shape Convention
@@ -281,14 +343,19 @@ pytest pykct/tests/ -v
 pykct/
 ├── pykct/
 │   ├── __init__.py           # Main API exports
+│   ├── PB2D.py               # Projection matrices of the parallel ray geometry
 │   ├── core/__init__.py      # Projector wrapper and functions
+│   ├── phantoms/             # Phantom objects, Shepp-Logan, sinograms
 │   ├── scripts/
+│   │   ├── _common.py
 │   │   ├── create_ball_phantom.py
 │   │   ├── create_shepp_logan.py
 │   │   ├── create_ball_sinogram.py
 │   │   ├── create_shepp_logan_sinogram.py
+│   │   ├── create_camera_matrices_parallel_ray3d.py
 │   │   └── den_centroid.py
 │   └── tests/
+│       ├── test_PB2D.py
 │       └── test_projector.py
 ├── setup.py
 ├── README.md
