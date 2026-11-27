@@ -7,9 +7,9 @@ Port of the KCT script createCameraMatricesForCircularScanTrajectoryParallelRay3
 Two subcommands produce the two matrix formats of KCT:
 
     PB3D  2x4 matrices of the 3D parallel beam tools kct-pb-*,
-          computed by pykct.PB2D.projection_matrix2D.
+          computed by pykct.PM.projection_matrix2D.
     PB2D  1x4 matrices of the 2D parallel beam tools kct-pb2d-*,
-          computed by pykct.PB2D.projection_matrix1D.
+          computed by pykct.PM.projection_matrix1D.
 
 See also
 https://kulvait.github.io/KCT_doc/posts/working-with-kct-cbct-5-parallel-beam-geometry.html
@@ -33,7 +33,7 @@ import sys
 import numpy as np
 from denpy import DEN
 
-from pykct.PB2D import projection_matrix1D, projection_matrix2D
+from pykct.PM import projection_matrix1D, projection_matrix2D
 from pykct.scripts._common import check_output
 
 # Defaults of the uniform discretization, the options default to None to detect their explicit use
@@ -151,7 +151,7 @@ def main(argv=None):
 
     p3 = sub.add_parser("PB3D", parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter,
                         help="2x4 matrices [[a, px0], [b, py0]] of the 3D parallel beam tools kct-pb-*.",
-                        description="2x4 matrices [[a, px0], [b, py0]] mapping (x, y, z) to (PX, PY), see pykct.PB2D.projection_matrix2D.")
+                        description="2x4 matrices [[a, px0], [b, py0]] mapping (x, y, z) to (PX, PY), see pykct.PM.projection_matrix2D.")
     p3.add_argument("--projection-sizey", type=int, default=3840, help="PY dimension of detector in pixel count.")
     p3.add_argument("--pixel-sizey", type=float, default=0.064, help="Y pixel size.")
     p3.add_argument("--detector-centerz", type=float, default=0., help="Coordinate z of the center of the detector.")
@@ -160,7 +160,7 @@ def main(argv=None):
 
     p2 = sub.add_parser("PB2D", parents=[common], formatter_class=argparse.ArgumentDefaultsHelpFormatter,
                         help="1x4 matrices [[a0, a1, a2, a3]] of the 2D parallel beam tools kct-pb2d-*.",
-                        description="1x4 matrices [[a0, a1, a2, a3]] mapping (x, y, r) to PX = a0*x + a1*y + a2*r + a3, where r is the detector row index, see pykct.PB2D.projection_matrix1D. The kct-pb2d-* tools evaluate r = --z-level2d-origin + row index of the processed projections.")
+                        description="1x4 matrices [[a0, a1, a2, a3]] mapping (x, y, r) to PX = a0*x + a1*y + a2*r + a3, where r is the detector row index, see pykct.PM.projection_matrix1D. The kct-pb2d-* tools evaluate r = --z-level2d-origin + row index of the processed projections.")
     p2.add_argument("--rotation-center-slope", type=float, default=0., help="Shift of the image of the rotation axis in pixels per detector row r, a2 of the matrix. ROTATION_CENTER_OFFSET_PIX is then the shift in the row r = 0.")
     p2.set_defaults(create=matrices_PB2D, rows=1)
 

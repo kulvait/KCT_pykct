@@ -6,7 +6,7 @@ PyKCT is a clean Python package for KCT C++ parallel beam 2D projector integrati
 - Phantom generation (ball, Shepp-Logan via denpy)
 - Sinogram projection with automatic matrix creation
 - CoR offset support
-- Parallel ray projection matrices of KCT (`pykct.PB2D`)
+- Parallel ray projection matrices of KCT (`pykct.PM`)
 - Centroid calculation
 
 ## Installation
@@ -182,7 +182,7 @@ pykct-den-centroid data/ball5.den
 6. **OpenCL platform**: C++ runtime auto-detects by default
    - Specify `--platform` only to force a specific device; never a dummy `0:0`
 
-7. **Projection matrices**: `pykct.PB2D.projection_matrix2D` (2x4, kct-pb-*)
+7. **Projection matrices**: `pykct.PM.projection_matrix2D` (2x4, kct-pb-*)
    and `projection_matrix1D` (1x4, kct-pb2d-*) create the matrix of one view,
    `createCameraMatricesForCircularScanTrajectoryPB` (subcommands `PB3D`, `PB2D`) a circular trajectory
 

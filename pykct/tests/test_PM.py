@@ -1,9 +1,9 @@
-"""Tests of pykct.PB2D, properties stated in the docstrings."""
+"""Tests of pykct.PM, properties stated in the docstrings."""
 
 import numpy as np
 import pytest
 
-from pykct.PB2D import (projection_matrix1D, projection_matrix2D, projection_matrix2D_skew,
+from pykct.PM import (projection_matrix1D, projection_matrix2D, projection_matrix2D_skew,
                         projection_matrix2D_tilt, projection_matrix2D_vectors)
 
 N, M = 101, 7

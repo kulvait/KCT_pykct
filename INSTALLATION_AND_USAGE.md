@@ -5,7 +5,7 @@
 PyKCT is a clean Python package for KCT C++ parallel beam 2D projector integration. It provides:
 - Easy-to-use projection functions (similar to `radon` from scikit-image)
 - Automatic projection matrix creation for the projection functions
-- `pykct.PB2D` for explicit parallel ray projection matrices of KCT
+- `pykct.PM` for explicit parallel ray projection matrices of KCT
 - Phantom generation utilities
 - Command-line tools for batch processing
 
@@ -173,20 +173,20 @@ sinogram = projector.project(
 )
 ```
 
-The matrices of a single view come from `pykct.PB2D`, e.g. with a skewed
+The matrices of a single view come from `pykct.PM`, e.g. with a skewed
 rotation axis for kct-pb2d-* (1x4 matrices, the third coordinate is the
 detector row):
 
 ```python
 import numpy as np
-from pykct import PB2D
+from pykct import PM
 
 angles = np.deg2rad(np.linspace(0, 360, 512, endpoint=False))
-P = np.array([PB2D.projection_matrix1D(t, 256, 1.0, rotation_center_offset_pix=2.0,
+P = np.array([PM.projection_matrix1D(t, 256, 1.0, rotation_center_offset_pix=2.0,
                                        rotation_center_slope=0.01) for t in angles])  # (512, 1, 4)
 ```
 
-See the README for all functions of `pykct.PB2D` and the script
+See the README for all functions of `pykct.PM` and the script
 `createCameraMatricesForCircularScanTrajectoryPB`.
 
 ## Geometry Reference
@@ -205,7 +205,7 @@ See the README for all functions of `pykct.PB2D` and the script
 axis_position = (N-1)/2 + cor_offset
 ```
 
-This is `rotation_center_offset_pix` of `pykct.PB2D` and
+This is `rotation_center_offset_pix` of `pykct.PM` and
 `--rotation-center-offset-pix` of `createProjectionMatrices.py` and
 `createCameraMatricesForCircularScanTrajectoryPB`. The
 `--detector-center-offsetvx` of
@@ -214,7 +214,7 @@ detector centre instead, so it equals `-cor_offset * pixel_size`. Estimators rep
 axis position in pixel-index units with `(N-1)/2` as detector centre
 (e.g. algotom `find_center_vo`) return `(N-1)/2 + cor_offset`.
 
-Matrices are created by `pykct.PB2D.projection_matrix2D` in the
+Matrices are created by `pykct.PM.projection_matrix2D` in the
 `--material-ct-convention` of the geometry script; the pb2d projector does not
 use the detector y row.
 
@@ -243,7 +243,7 @@ pytest pykct/tests/ -v
 pykct/
 ├── pykct/
 │   ├── __init__.py           # Main exports
-│   ├── PB2D.py               # Projection matrices of the parallel ray geometry
+│   ├── PM.py                 # Projection matrices of the parallel ray geometry
 │   ├── core/
 │   │   └── __init__.py       # Projector wrapper and functions
 │   ├── phantoms/
@@ -257,7 +257,7 @@ pykct/
 │   │   ├── createCameraMatricesForCircularScanTrajectoryPB.py  # port of the KCT geometry script
 │   │   └── den_centroid.py
 │   └── tests/
-│       ├── test_PB2D.py
+│       ├── test_PM.py
 │       └── test_projector.py
 ├── setup.py
 ├── README.md

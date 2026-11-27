@@ -18,7 +18,7 @@ import tempfile
 import shutil
 from typing import Optional
 
-from pykct.PB2D import projection_matrix2D
+from pykct.PM import projection_matrix2D
 
 
 class pb2d_projector:
@@ -27,7 +27,7 @@ class pb2d_projector:
     (OpenCL). Named after the binary; other KCT projectors (cone beam, 3D)
     are separate tools.
 
-    Projection matrices are created by :func:`pykct.PB2D.projection_matrix2D`
+    Projection matrices are created by :func:`pykct.PM.projection_matrix2D`
     in the material CT convention (a = [cos, sin, 0]/PX, b = [0, 0, 1]/PY),
     that of createCameraMatricesForCircularScanTrajectoryParallelRay3D.py
     ``--material-ct-convention``.
@@ -129,7 +129,7 @@ class pb2d_projector:
         )
         angles_rad = np.radians(angles)
         
-        # Rotation axis imaged at (N-1)/2 + cor_offset, see pykct.PB2D.projection_matrix2D
+        # Rotation axis imaged at (N-1)/2 + cor_offset, see pykct.PM.projection_matrix2D
         matrices = np.array([
             projection_matrix2D(theta, detector_sizex, detector_sizey, pixel_sizex, pixel_sizey,
                                 rotation_center_offset_pix=cor_offset, material_ct_convention=True)
@@ -154,12 +154,15 @@ class pb2d_projector:
         matrices_file: str,
         output_file: str,
         detector_sizex: int = 256,
-        detector_sizey: int = 1,
+        detector_sizey: Optional[int] = None,
         force: bool = True
     ) -> np.ndarray:
         """
         Project volume using C++ binary with OpenCL.
-        
+
+        The binary projects all slices of the volume, so the projections have
+        one detector row per volume slice.
+
         Parameters
         ----------
         volume_file : str
@@ -170,8 +173,11 @@ class pb2d_projector:
             Path for output projection DEN file.
         detector_sizex : int
             X dimension of detector (required by C++ binary).
-        detector_sizey : int
-            Y dimension of detector (required by C++ binary).
+        detector_sizey : int, optional
+            Number of detector rows. kct-pb2d-projector derives it from the
+            volume (one row per slice) and no longer accepts
+            --projection-sizey, so this is only checked against the number of
+            slices of the volume; a mismatch raises ValueError.
         force : bool
             Overwrite output file if exists.
         
@@ -180,6 +186,17 @@ class pb2d_projector:
         np.ndarray
             Projected sinogram as numpy array of shape (1, n_angles, ndet).
         """
+        if detector_sizey is not None:
+            header = DEN.readHeader(volume_file)
+            # dimspec is (x, y, z, ...) for the extended DEN format, zdim for the legacy one
+            slices = header["dimspec"][2] if "dimspec" in header and len(header["dimspec"]) > 2 \
+                else header.get("zdim", 1)
+            if int(detector_sizey) != int(slices):
+                raise ValueError(
+                    f"detector_sizey={detector_sizey} differs from the {slices} slices of "
+                    f"{volume_file}; kct-pb2d-projector creates one detector row per slice."
+                )
+
         # Build command
         cmd = ['kct-pb2d-projector']
         
@@ -191,7 +208,6 @@ class pb2d_projector:
             '--cvp',
             '--force' if force else '',
             '--projection-sizex', str(detector_sizex),
-            '--projection-sizey', str(detector_sizey),
             volume_file,
             matrices_file,
             output_file

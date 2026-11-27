@@ -7,7 +7,7 @@ projections without manually constructing projection matrices.
 
 Main functionality:
 - pb2d_projector: Wrapper for kct-pb2d-projector binary
-- PB2D: projection matrices of the KCT parallel ray geometry, 2x4 for
+- PM: projection matrices of the KCT parallel ray geometry, 2x4 for
   kct-pb-* (orthogonal, skewed, tilted or general detector) and 1x4 for
   kct-pb2d-*; used by the automatic matrix creation of the projector
 - Phantoms on the pixel grid: objects that draw themselves (shapes Circle,
@@ -18,7 +18,7 @@ Main functionality:
 - Centroid calculation: For CoR detection
 """
 
-from . import PB2D
+from . import PM
 from .core import pb2d_projector
 from .core import create_projection_matrices, project
 from .core import project_image
