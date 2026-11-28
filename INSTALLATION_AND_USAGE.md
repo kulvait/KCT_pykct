@@ -6,6 +6,7 @@ PyKCT is a clean Python package for KCT C++ parallel beam 2D projector integrati
 - Easy-to-use projection functions (similar to `radon` from scikit-image)
 - Automatic projection matrix creation for the projection functions
 - `pykct.PM` for explicit parallel ray projection matrices of KCT
+- `pykct.PB2D` for projection, backprojection, FBP and CGLS/PDHG by the kct-pb2d-* tools
 - Phantom generation utilities
 - Command-line tools for batch processing
 
@@ -145,32 +146,19 @@ sl_sino = create_sinogram2d(256, shepp_logan_shapes2d(256), n_angles=512,
 
 ### 4. Advanced Usage (Custom Matrices)
 
-For full control over projection matrices:
+For full control over projection matrices, pass them (array or DEN file, 1x4
+or 2x4) to the tools of `pykct.PB2D`:
 
 ```python
-from pykct import pb2d_projector
+from pykct import PB2D
 from denpy import DEN
 
-projector = pb2d_projector()
-
-# Create custom matrices
-matrices = projector.create_projection_matrices(
-    output_file="matrices.den",
-    n_angles=512,
-    start_angle=0.0,
-    angle_range=360.0,
-    detector_sizex=256,
-    cor_offset=0.0
-)
-
-# Project with your own volume
+matrices = PB2D.circular_trajectory_projection_matrices(512, 256, angle_range=360.0, cor_offset=0.0)
 volume = DEN.getNumpyArray("volume.den")
-sinogram = projector.project(
-    volume_file="volume.den",
-    matrices_file="matrices.den",
-    output_file="projection.den",
-    detector_sizex=256
-)
+sinogram = PB2D.pb2d_projector().project(volume, matrices, detector_sizex=256,
+                                         output_file="projection.den")
+fbp = PB2D.pb2d_backprojector().fbp(sinogram, matrices, volume_sizex=256)
+cgls = PB2D.pb2d_krylov().reconstruct("projection.den", matrices, volume_sizex=256)
 ```
 
 The matrices of a single view come from `pykct.PM`, e.g. with a skewed
@@ -244,6 +232,7 @@ pykct/
 ├── pykct/
 │   ├── __init__.py           # Main exports
 │   ├── PM.py                 # Projection matrices of the parallel ray geometry
+│   ├── PB2D.py               # kct-pb2d-* tools: projector, backprojector (FBP), krylov
 │   ├── core/
 │   │   └── __init__.py       # Projector wrapper and functions
 │   ├── phantoms/
@@ -257,6 +246,7 @@ pykct/
 │   │   ├── createCameraMatricesForCircularScanTrajectoryPB.py  # port of the KCT geometry script
 │   │   └── den_centroid.py
 │   └── tests/
+│       ├── test_PB2D.py
 │       ├── test_PM.py
 │       └── test_projector.py
 ├── setup.py

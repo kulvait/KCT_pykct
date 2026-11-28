@@ -24,23 +24,21 @@ class TestPb2dProjector:
     
     def test_projection_matrices_creation(self):
         """Test projection matrix creation."""
-        from pykct import pb2d_projector
-        
-        projector = pb2d_projector(verbose=False)
-        
+        from pykct import create_projection_matrices
+
         with tempfile.NamedTemporaryFile(suffix='.den', delete=False) as f:
             temp_file = f.name
         
         try:
-            matrices = projector.create_projection_matrices(
+            matrices = create_projection_matrices(
                 output_file=temp_file,
                 n_angles=36,
                 detector_sizex=64,
                 cor_offset=0.0
             )
             
-            assert matrices.shape == (36, 2, 4)
-            assert DEN.readHeader(temp_file)['shape'] == (36, 2, 4)
+            assert matrices.shape == (36, 1, 4)
+            assert DEN.readHeader(temp_file)['shape'] == (36, 1, 4)
         finally:
             if os.path.exists(temp_file):
                 os.unlink(temp_file)
@@ -55,7 +53,7 @@ class TestPb2dProjector:
         
         projector = pb2d_projector(verbose=False)
         
-        sinogram = projector.project_phantom(
+        sinogram = projector.project(
             image,
             n_angles=36,
             detector_sizex=64,
@@ -80,7 +78,7 @@ class TestPb2dProjector:
         projector = pb2d_projector(verbose=False)
         
         # Project with CoR offset
-        sino_offset = projector.project_phantom(
+        sino_offset = projector.project(
             image,
             n_angles=36,
             detector_sizex=64,
@@ -88,7 +86,7 @@ class TestPb2dProjector:
         )
         
         # Should have different sinogram than CoR=0
-        sino_zero = projector.project_phantom(
+        sino_zero = projector.project(
             image,
             n_angles=36,
             detector_sizex=64,
@@ -429,22 +427,22 @@ class TestGeometry:
     """Rotation axis offset convention of the projector."""
 
     @pytest.mark.parametrize("cor_offset", [0.0, 1.3, -3.0])
-    def test_matrices_match_createProjectionMatrices(self, cor_offset, tmp_path):
-        """Rows equal createProjectionMatrices.py --material-ct-convention
-        --rotation-center-offset-pix cor_offset: a = [cos, sin, 0]/PX,
-        px0 = (N-1)/2 + cor_offset, b = [0, 0, 1]/PY."""
+    @pytest.mark.parametrize("slope", [0.0, -0.02])
+    def test_matrices_match_createProjectionMatrices(self, cor_offset, slope, tmp_path):
+        """The row equals the first row of createProjectionMatrices.py --material-ct-convention
+        --rotation-center-offset-pix cor_offset: a = [cos, sin, 0]/PX, px0 = (N-1)/2 + cor_offset,
+        with a2 = rotation_center_slope (1x4 protocol of the kct-pb2d-* tools)."""
         from pykct import create_projection_matrices
 
-        N, M = 64, 3
-        m = create_projection_matrices(str(tmp_path / "m.den"), n_angles=12,
-                                       detector_sizex=N, detector_sizey=M,
-                                       cor_offset=cor_offset)
+        N = 64
+        m = create_projection_matrices(str(tmp_path / "m.den"), n_angles=12, detector_sizex=N,
+                                       cor_offset=cor_offset, rotation_center_slope=slope)
+        assert m.shape == (12, 1, 4)
         theta = np.radians(np.linspace(0, 360, 12, endpoint=False))
         np.testing.assert_allclose(m[:, 0, 0], np.cos(theta), atol=1e-12)
         np.testing.assert_allclose(m[:, 0, 1], np.sin(theta), atol=1e-12)
+        np.testing.assert_allclose(m[:, 0, 2], slope, atol=1e-12)
         np.testing.assert_allclose(m[:, 0, 3], (N - 1) / 2 + cor_offset, atol=1e-12)
-        np.testing.assert_allclose(m[:, 1, :3], [[0, 0, 1]] * 12)
-        np.testing.assert_allclose(m[:, 1, 3], (M - 1) / 2)
 
     @pytest.mark.parametrize("cor_offset", [0.0, 1.3, -3.0, 5.0])
     def test_rotation_axis_position(self, cor_offset):

@@ -225,7 +225,7 @@ def test_tilt_keeps_orthogonal_axes_and_mixes_coordinates(theta, material):
 
 
 def test_skew_from_rotation_center_fit_2D():
-    """2D skew matrix reproduces the fit offset(r) = A + B * r at the rows, offset given at the row py0."""
+    """2D skew matrix reproduces the fit offset(r) = A + B * r at the rows, offset given at the center row."""
     pix = 0.001281815405036707
     fit_a, fit_b = 0.005630139932862342, 1.2281041144214863e-08
     Nd, Md = 5120, 3840
@@ -237,3 +237,25 @@ def test_skew_from_rotation_center_fit_2D():
             z = (r - CM[1, 3]) / CM[1, 2]
             PX, PY = project(CM, [0.0, 0.0, z])
             np.testing.assert_allclose([PX, PY], [(Nd - 1) / 2 + (fit_a + fit_b * r) / pix, r], atol=1e-8)
+
+
+@pytest.mark.parametrize("material", CONVENTIONS)
+@pytest.mark.parametrize("theta", THETAS)
+def test_skew_offset_refers_to_center_row(theta, material):
+    """rotation_center_offset_pix of projection_matrix2D_skew is the offset in the center row (M - 1) / 2,
+    also when detector_center_offsetvy and detector_centerz move the row py0 of z = 0."""
+    rcop, vx = 0.75, 0.3
+    CM = projection_matrix2D_skew(theta, N, M, pixel_sizex, pixel_sizey, detector_centerz=1.1,
+                                  detector_center_offsetvx=vx, detector_center_offsetvy=-0.15,
+                                  rotation_center_offset_pix=rcop, rotation_center_slope=SLOPE,
+                                  material_ct_convention=material)
+    assert abs(CM[1, 3] - (M - 1) / 2) > 1.0  # py0 is not the center row
+    for z in (-0.3, 0.0, 0.2):
+        PX, PY = project(CM, [0.0, 0.0, z])
+        np.testing.assert_allclose(PX, (N - 1) / 2 + rcop + SLOPE * (PY - (M - 1) / 2) - vx / pixel_sizex, atol=1e-10)
+    CM1 = projection_matrix1D(theta, N, pixel_sizex, detector_center_offsetvx=vx,
+                              rotation_center_offset_pix=rcop - SLOPE * (M - 1) / 2, rotation_center_slope=SLOPE,
+                              material_ct_convention=material)
+    for x in ([0.3, -0.25, 0.17], [-0.4, 0.1, -0.33]):
+        PX, PY = project(CM, x)
+        np.testing.assert_allclose(project(CM1, [x[0], x[1], PY])[0], PX, atol=1e-10)

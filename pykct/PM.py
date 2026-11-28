@@ -31,10 +31,11 @@ Two formats are provided:
       by rotation_center_slope columns per row, the axes stay orthogonal.
 - projection_matrix1D: 1x4 matrix [[a0, a1, a2, a3]] mapping (x, y, r) to
   PX, where r is the detector row index, used by the 2D parallel beam tools
-  of KCT (kct-pb2d-*). They evaluate the matrix at
-  r = --z-level2d-origin + row index of the processed projections, the
-  coefficient a2 = rotation_center_slope encodes a skewed rotation axis
-  as a shift of the rotation center per detector row.
+  of KCT (kct-pb2d-*). The coefficient a2 = rotation_center_slope encodes
+  a skewed rotation axis as a shift of the rotation center per detector
+  row. The tools evaluate the matrix once per block of rows processed
+  together, at its center row r = --z-level2d-origin + slab-from
+  + (slab-size - 1) / 2, so the shift is constant within the block.
 
 The kct-pb2d-* tools accept also the 2x4 matrices and use their first row,
 which equals the 1x4 matrix without skew.
@@ -197,14 +198,21 @@ def projection_matrix1D(theta,
              + rotation_center_slope * r - detector_center_offsetvx / pixel_size,
 
     where N = detector_size. The skew is thus not a property of the volume
-    geometry, it is a protocol between the caller and the kct-pb2d-* tools,
-    which evaluate the matrix at r = --z-level2d-origin + row index of the
-    processed projections, e.g. with --slab-from. A linear fit
-    offset(r) = A + B * r of the rotation center in pixels is encoded by
+    geometry, it is a protocol between the caller and the kct-pb2d-* tools.
+    They do not evaluate the matrix per row but once per block of rows
+    processed together, at the center row of the block
+
+        r = --z-level2d-origin + slab-from + (slab-size - 1) / 2,
+
+    the whole block is reconstructed with the rotation center of this row
+    (the tools may split a slab into several blocks to fit the device
+    memory, each uses its own center row). The skew is thus resolved slab by
+    slab, exactly with slabs of one row. A linear fit offset(r) = A + B * r
+    of the rotation center in pixels is encoded by
     rotation_center_offset_pix = A and rotation_center_slope = B, and
-    --z-level2d-origin is the row of the first processed projection row in
-    the row coordinates of the fit, 0 if they are the same. Without skew,
-    the matrix is the first row of projection_matrix2D and r is irrelevant.
+    --z-level2d-origin is the row 0 of the processed projections in the row
+    coordinates of the fit, 0 if they are the same. Without skew, the matrix
+    is the first row of projection_matrix2D and r is irrelevant.
 
     Parameters
     ----------
@@ -349,11 +357,20 @@ def projection_matrix2D_skew(theta,
     (detector_centerx, detector_centery, detector_centerz)
     + detector_center_offsetvx * DX + detector_center_offsetvy * DY
     - rotation_center_offset_pix * VX, so rotation_center_offset_pix shifts PX
-    by this number of pixels in all rows and it refers to the row py0, which
-    images the plane z = 0. With rotation_center_slope = 0 the matrix equals
-    projection_matrix2D. The substitution z = (r - py0) / b[2] gives
-    projection_matrix1D with rotation_center_offset_pix shifted by
-    -rotation_center_slope * py0, see
+    by this number of pixels in all rows. The image of the rotation axis is in
+    the detector row PY at the column
+
+        PX = (N - 1) / 2 + rotation_center_offset_pix
+             + rotation_center_slope * (PY - (M - 1) / 2)
+             - detector_center_offsetvx / pixel_sizex
+
+    (with detector_centerx = detector_centery = 0), so rotation_center_offset_pix
+    refers to the center row (M - 1) / 2. It is also the row py0 imaging the
+    plane z = 0 only if detector_center_offsetvy = detector_centerz = 0. With
+    rotation_center_slope = 0 the matrix equals projection_matrix2D. The
+    substitution z = (r - py0) / b[2] gives projection_matrix1D with
+    rotation_center_offset_pix shifted by -rotation_center_slope * (M - 1) / 2,
+    see
     https://kulvait.github.io/KCT_doc/posts/working-with-kct-cbct-6-parallel-beam-geometry-2d.html
 
     Returns

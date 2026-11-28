@@ -144,7 +144,10 @@ The 2x4 matrices are for the 3D tools `kct-pb-*`, the 1x4 matrices for the
 `rotation_center_slope` is the shift of the image of the rotation axis in
 columns per detector row, the 2D functions refer the offset to the row imaging
 z = 0, `projection_matrix1D` to the row 0. kct-pb2d-* read also 2x4 matrices,
-but use only their first row, which is correct only without skew.
+but use only their first row, which is correct only without skew. kct-pb2d-*
+evaluate the 1x4 matrix once per block of rows, at its center row
+`--z-level2d-origin + slab-from + (slab-size - 1)/2`, so the skew is resolved
+slab by slab.
 
 ```python
 import numpy as np
@@ -160,6 +163,36 @@ DEN.storeNdarrayAsDEN("pm.den", P, force=True)                   # (1800, 2, 4)
 P1 = np.array([PM.projection_matrix1D(t, 2560, 0.00065, rotation_center_offset_pix=3.5,
                                         rotation_center_slope=1e-4) for t in angles])
 ```
+
+### Reconstruction (pykct.PB2D)
+
+`pykct.PB2D` wraps the three 2D parallel beam tools: `pb2d_projector.project`,
+`pb2d_backprojector.backproject` / `fbp` and `pb2d_krylov.reconstruct` (CGLS,
+PDHG). Volumes are arrays `(nz, ny, nx)`, sinograms `(nz, n_angles, n_det)`;
+without matrices a circular scan is created from `n_angles`, `start_angle`,
+`angle_range`, `pixel_size` and `cor_offset`, with matrices (array or DEN
+file, 1x4 or 2x4) any geometry of `pykct.PM` is used. Arrays may be replaced
+by DEN files, `output_file` keeps the result.
+
+```python
+import numpy as np
+from pykct import PB2D, create_shepp_logan_phantom2d
+
+image = create_shepp_logan_phantom2d(256)
+sino = PB2D.pb2d_projector().project(image, detector_sizex=384, n_angles=720,
+                                     angle_range=180.0, cor_offset=3.5)
+fbp = PB2D.pb2d_backprojector().fbp(sino, volume_sizex=256, angle_range=180.0,
+                                    cor_offset=3.5, filter="hann")[0]
+cgls = PB2D.pb2d_krylov().reconstruct(sino, volume_sizex=256, max_iterations=40,
+                                      angle_range=180.0, cor_offset=3.5)[0]
+```
+
+`fbp` filters by `PB2D.ramp_filter` (ram-lak, shepp-logan, cosine, hamming,
+hann) in physical units and backprojects with the FBP scaling pi/n_angles; it
+assumes uniformly distributed angles over 180 or 360 degrees. The constructor
+parameters `platform_id`, `bin_dir` (directory of the binaries instead of
+PATH), `barrier`, `relaxed`, `timeout` and `extra_args` are common to all three
+tools.
 
 ## Command Line Tools
 
@@ -282,6 +315,27 @@ High-level convenience function for projecting images.
 **Returns:** Sinogram of shape (n_slices, n_angles, detector_sizex)
 - For 2D input: (1, n_angles, detector_sizex)
 
+### PB2D tools
+
+| call | returns |
+|---|---|
+| `pb2d_projector().project(volume, matrices=None, detector_sizex=256, n_angles=512, start_angle=0, angle_range=360, cor_offset=0, pixel_size=1, ...)` | sinogram `(nz, n_angles, detector_sizex)` |
+| `pb2d_backprojector().backproject(sinogram, matrices=None, volume_sizex=None, volume_sizey=None, scaling="none", ...)` | volume `(nz, ny, nx)`; scaling none (adjoint), fbp, natural, kaczmarz |
+| `pb2d_backprojector().fbp(sinogram, matrices=None, volume_sizex=None, filter="ram-lak", ...)` | volume `(nz, ny, nx)` |
+| `pb2d_krylov().reconstruct(sinogram, matrices=None, volume_sizex=None, algorithm="cgls", max_iterations=40, x0=None, ...)` | volume `(nz, ny, nx)` |
+| `circular_trajectory_projection_matrices(n_angles, detector_sizex, start_angle=0, angle_range=360, pixel_size=1, cor_offset=0, rotation_center_slope=0, endpoint=False)` | 1x4 matrices `(n_angles, 1, 4)` |
+| `ramp_filter(sinogram, pixel_size=1, filter="ram-lak")` | filtered sinogram |
+
+Further keyword arguments of all tools: `voxel_sizex`, `voxel_sizey`,
+`volume_centerx`, `volume_centery`, `z_level2d_origin`, `slab_from`,
+`slab_size`, `output_file`; the krylov also `stopping_relative_error`,
+`tikhonov_lambda_l2/v2/laplace`, `pdhg_mu`, `max_iterations_pdhg` and `args`.
+All tools also take `rotation_center_slope` for the circular scan (pixels per
+detector row, evaluated at the centre row of the slab). `project_image`,
+`project` and `create_projection_matrices` (1x4 matrices of a circular scan
+with `cor_offset` and `rotation_center_slope`) of `pykct.core` are kept as
+functions over `pykct.PB2D`.
+
 ### Shapes
 
 All shapes have `x_center=None`, `y_center=None` (None: image centre
@@ -358,7 +412,8 @@ pykct/
 ├── pykct/
 │   ├── __init__.py           # Main API exports
 │   ├── PM.py                 # Projection matrices of the parallel ray geometry
-│   ├── core/__init__.py      # Projector wrapper and functions
+│   ├── PB2D.py               # kct-pb2d-* tools: projector, backprojector (FBP), krylov
+│   ├── core/__init__.py      # Compatibility functions over PB2D.pb2d_projector
 │   ├── phantoms/             # Phantom objects, Shepp-Logan, sinograms
 │   ├── scripts/
 │   │   ├── _common.py
@@ -369,6 +424,7 @@ pykct/
 │   │   ├── createCameraMatricesForCircularScanTrajectoryPB.py
 │   │   └── den_centroid.py
 │   └── tests/
+│       ├── test_PB2D.py
 │       ├── test_PM.py
 │       └── test_projector.py
 ├── setup.py

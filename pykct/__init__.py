@@ -6,10 +6,11 @@ including phantom generation and convenience functions for creating
 projections without manually constructing projection matrices.
 
 Main functionality:
-- pb2d_projector: Wrapper for kct-pb2d-projector binary
+- PB2D: wrappers of the 2D parallel beam tools, pb2d_projector (projection),
+  pb2d_backprojector (backprojection, FBP) and pb2d_krylov (CGLS, PDHG)
 - PM: projection matrices of the KCT parallel ray geometry, 2x4 for
   kct-pb-* (orthogonal, skewed, tilted or general detector) and 1x4 for
-  kct-pb2d-*; used by the automatic matrix creation of the projector
+  kct-pb2d-*; used by the automatic matrix creation of the PB2D tools
 - Phantoms on the pixel grid: objects that draw themselves (shapes Circle,
   HollowCircle, Ellipse, Rectangle, Triangle, GaussianDot; image objects
   DenpyPhantom2D, ArrayImage), combined by create_phantom2d; Shepp-Logan
@@ -19,7 +20,8 @@ Main functionality:
 """
 
 from . import PM
-from .core import pb2d_projector
+from . import PB2D
+from .PB2D import pb2d_projector, pb2d_backprojector, pb2d_krylov
 from .core import create_projection_matrices, project
 from .core import project_image
 from .phantoms import (
@@ -47,10 +49,15 @@ __version__ = "0.2.0"
 
 __all__ = [
     # Projection matrices of the parallel ray geometry
+    "PM",
+
+    # 2D parallel beam tools
     "PB2D",
+    "pb2d_projector",
+    "pb2d_backprojector",
+    "pb2d_krylov",
 
     # Core projection
-    "pb2d_projector",
     "create_projection_matrices",
     "project",
     "project_image",
